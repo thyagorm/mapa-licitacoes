@@ -349,15 +349,36 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                # Chamada direta no modelo de produção oficial
-                resposta = client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=ListaItens,
-                    )
-                )
+                # Modelos suportados com retry contra sobrecarga (503 / 429)
+                modelos_disponiveis = ["gemini-3.6-flash", "gemini-2.0-flash"]
+                resposta = None
+                ultimo_erro = None
+
+                for nome_modelo in modelos_disponiveis:
+                    for tentativa in range(3):
+                        try:
+                            resposta = client.models.generate_content(
+                                model=nome_modelo,
+                                contents=prompt,
+                                config=types.GenerateContentConfig(
+                                    response_mime_type="application/json",
+                                    response_schema=ListaItens,
+                                )
+                            )
+                            if resposta and resposta.text:
+                                break
+                        except Exception as err:
+                            ultimo_erro = err
+                            msg_erro = str(err)
+                            if "503" in msg_erro or "429" in msg_erro or "UNAVAILABLE" in msg_erro:
+                                time.sleep(3 * (tentativa + 1))
+                            else:
+                                break
+                    if resposta and resposta.text:
+                        break
+
+                if not resposta:
+                    raise ultimo_erro
 
                 dados = ListaItens.model_validate_json(resposta.text)
 
