@@ -353,7 +353,8 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                modelos_tentativa = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash-latest"]
+                # Nomes canônicos e válidos da API v1beta
+                modelos_tentativa = ["gemini-2.5-flash", "gemini-1.5-flash"]
                 resposta = None
                 ultimo_erro = None
 
