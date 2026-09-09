@@ -349,29 +349,15 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                # Lista de modelos oficiais com gemini-2.0-flash como prioridade estável
-                modelos_tentativa = modelos_tentativa = ["gemini-3.6-flash", "gemini-2.5-flash"]
-                resposta = None
-                ultimo_erro = None
-
-                for nome_modelo in modelos_tentativa:
-                    try:
-                        resposta = client.models.generate_content(
-                            model=nome_modelo,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json",
-                                response_schema=ListaItens,
-                            )
-                        )
-                        if resposta:
-                            break
-                    except Exception as err:
-                        ultimo_erro = err
-                        time.sleep(2)
-
-                if not resposta:
-                    raise ultimo_erro
+                # Chamada direta no modelo de produção oficial
+                resposta = client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=ListaItens,
+                    )
+                )
 
                 dados = ListaItens.model_validate_json(resposta.text)
 
