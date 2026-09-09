@@ -350,11 +350,7 @@ if arquivo_pdf and api_key:
                     """
 
                 # Lista de modelos oficiais com gemini-2.0-flash como prioridade estável
-                modelos_tentativa = [
-                    "gemini-2.0-flash",
-                    "gemini-2.5-flash",
-                    "gemini-1.5-flash"
-                ]
+                modelos_tentativa = modelos_tentativa = ["gemini-3.6-flash", "gemini-2.5-flash"]
                 resposta = None
                 ultimo_erro = None
 
