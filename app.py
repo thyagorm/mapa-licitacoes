@@ -28,11 +28,14 @@ st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_
 st.title("🎯 Analisador de Editais & Mapa de Preços")
 st.caption("Varredura inteligente de editais cruzada diretamente com o banco de dados oficial de portfólio.")
 
-# Chave de API
+# Chave de API higienizada contra erros de autenticação (OAuth / ACCESS_TOKEN_TYPE_UNSUPPORTED)
+api_key = ""
 if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
-    api_key = st.secrets["GEMINI_API_KEY"]
+    api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip("'").strip('"')
 else:
-    api_key = st.sidebar.text_input("Chave Gemini API", type="password")
+    api_key_input = st.sidebar.text_input("Chave Gemini API", type="password")
+    if api_key_input:
+        api_key = api_key_input.strip().strip("'").strip('"')
 
 # 3. Base de Dados e Normalização
 ARQUIVO_PORTFOLIO = "portfolio_laboratorios.xlsx"
@@ -171,7 +174,6 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
         if not matches.empty:
             labs_encontrados = matches["LABORATORIO_NORM"].unique().tolist()
             
-            # Hierarquia: Sanofi > Blau > Eurofarma
             tem_sanofi = any("SANOFI" in l for l in labs_encontrados)
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
@@ -223,6 +225,7 @@ def gerar_excel_estilizado(df_dados):
 
         num_linhas = len(df_dados)
         num_cols = len(df_dados.columns)
+        colunas_nomes = list(df_dados.columns)
 
         # 1. Cabeçalho
         for col_num in range(1, num_cols + 1):
@@ -232,7 +235,26 @@ def gerar_excel_estilizado(df_dados):
             celula.alignment = alinhamento_centro
             ws.row_dimensions[1].height = 28
 
-        # 2. Dados e Fórmulas
+        # Mapeamento dinâmico dos índices de colunas
+        idx_item = colunas_nomes.index("Item") + 1 if "Item" in colunas_nomes else -1
+        idx_desc = colunas_nomes.index("Descrição Completa Edital") + 1 if "Descrição Completa Edital" in colunas_nomes else -1
+        idx_princ = colunas_nomes.index("Princípio Ativo") + 1 if "Princípio Ativo" in colunas_nomes else -1
+        idx_unid = colunas_nomes.index("Unidade") + 1 if "Unidade" in colunas_nomes else -1
+        idx_qtd = colunas_nomes.index("Qtd") + 1 if "Qtd" in colunas_nomes else -1
+        idx_vref = colunas_nomes.index("Valor Ref. Unit. (R$)") + 1 if "Valor Ref. Unit. (R$)" in colunas_nomes else -1
+        idx_vtot = colunas_nomes.index("Valor Total Estimado (R$)") + 1 if "Valor Total Estimado (R$)" in colunas_nomes else -1
+        idx_lab = colunas_nomes.index("Laboratório Sugerido") + 1 if "Laboratório Sugerido" in colunas_nomes else -1
+        idx_prod = colunas_nomes.index("Produto / Marca Ref.") + 1 if "Produto / Marca Ref." in colunas_nomes else -1
+        idx_custo = colunas_nomes.index("Custo Aquisição (R$)") + 1 if "Custo Aquisição (R$)" in colunas_nomes else -1
+        idx_margem = colunas_nomes.index("Margem Alvo (%)") + 1 if "Margem Alvo (%)" in colunas_nomes else -1
+        idx_proposta = colunas_nomes.index("Preço Proposta Unit. (R$)") + 1 if "Preço Proposta Unit. (R$)" in colunas_nomes else -1
+
+        letra_qtd = get_column_letter(idx_qtd) if idx_qtd > 0 else "E"
+        letra_vref = get_column_letter(idx_vref) if idx_vref > 0 else "F"
+        letra_custo = get_column_letter(idx_custo) if idx_custo > 0 else "I"
+        letra_margem = get_column_letter(idx_margem) if idx_margem > 0 else "J"
+
+        # 2. Formatação das Células e Fórmulas
         for row_idx in range(2, num_linhas + 2):
             ws.row_dimensions[row_idx].height = 20
             for col_idx in range(1, num_cols + 1):
@@ -240,39 +262,45 @@ def gerar_excel_estilizado(df_dados):
                 cell.font = fonte_corpo
                 cell.border = borda_fina
 
-                if col_idx in [1, 4]:  # Item e Unidade
+                if col_idx in [idx_item, idx_unid]:
                     cell.alignment = alinhamento_centro
-                elif col_idx in [2, 3, 6, 7]:  # Descrição, Princípio, Lab, Produto
+                elif col_idx in [idx_desc, idx_princ, idx_lab, idx_prod]:
                     cell.alignment = alinhamento_esquerda
-                elif col_idx == 5:  # Quantidade
+                elif col_idx == idx_qtd:
                     cell.alignment = alinhamento_direita
                     cell.number_format = "#,##0"
-                elif col_idx == 6:  # Valor Ref. Unitário
+                elif col_idx in [idx_vref, idx_vtot]:
                     cell.alignment = alinhamento_direita
                     cell.number_format = "R$ #,##0.00"
-                elif col_idx == 8:  # Custo Aquisição (Editável)
+                    if col_idx == idx_vtot and idx_qtd > 0 and idx_vref > 0:
+                        cell.value = f"={letra_qtd}{row_idx}*{letra_vref}{row_idx}"
+                elif col_idx == idx_custo:
                     cell.alignment = alinhamento_direita
                     cell.number_format = "R$ #,##0.00"
                     cell.fill = fill_editavel
-                elif col_idx == 9:  # Margem Alvo (%)
+                elif col_idx == idx_margem:
                     cell.alignment = alinhamento_direita
                     cell.number_format = "0.0%"
-                    cell.value = 0.15  # 15%
-                elif col_idx == 10:  # Preço Proposta Unitário (Fórmula Dinâmica)
+                    cell.value = 0.15
+                elif col_idx == idx_proposta:
                     cell.alignment = alinhamento_direita
                     cell.number_format = "R$ #,##0.00"
-                    cell.value = f"=H{row_idx}*(1+I{row_idx})"
+                    cell.value = f"={letra_custo}{row_idx}*(1+{letra_margem}{row_idx})"
 
-        # 3. Autoajuste de Colunas
+        # 3. Autoajuste de Larguras
         for col in ws.columns:
             col_letter = get_column_letter(col[0].column)
             max_len = max(len(str(cell.value or '')) for cell in col)
-            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 13)
 
-        ws.column_dimensions['B'].width = 42
-        ws.column_dimensions['C'].width = 25
-        ws.column_dimensions['F'].width = 28
-        ws.column_dimensions['G'].width = 22
+        if idx_desc > 0:
+            ws.column_dimensions[get_column_letter(idx_desc)].width = 42
+        if idx_princ > 0:
+            ws.column_dimensions[get_column_letter(idx_princ)].width = 25
+        if idx_lab > 0:
+            ws.column_dimensions[get_column_letter(idx_lab)].width = 28
+        if idx_prod > 0:
+            ws.column_dimensions[get_column_letter(idx_prod)].width = 22
 
     return output.getvalue()
 
@@ -292,6 +320,7 @@ if arquivo_pdf and api_key:
                     subs_unicas = df_portfolio["SUBSTÂNCIA"].dropna().unique()[:250].tolist()
                     guia_substancias = f"Lista de referência de substâncias prioritárias:\n[{', '.join(subs_unicas)}]"
 
+                # Instanciação blindada com a chave higienizada
                 client = genai.Client(api_key=api_key)
 
                 if segmento == "Medicamentos":
@@ -361,6 +390,10 @@ if arquivo_pdf and api_key:
                         "Qtd", 
                         "Valor Ref. Unit. (R$)"
                     ]
+
+                    # Coluna condicional de Valor Total Estimado
+                    if (df["Valor Ref. Unit. (R$)"] > 0).any():
+                        df["Valor Total Estimado (R$)"] = df["Qtd"] * df["Valor Ref. Unit. (R$)"]
 
                     if segmento == "Medicamentos":
                         df = enriquecer_com_portfolio(df, df_portfolio, labs_selecionados)
