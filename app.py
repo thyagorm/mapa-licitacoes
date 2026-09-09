@@ -26,7 +26,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("Varredura inteligente de editais cruzada diretamente com o banco de dados oficial de portfólio.")
+st.caption("🚀 Pipeline Ativo: v2.0 - Auto-Descoberta Dinâmica de Modelos & Cruzamento de Portfólio")
 
 # Chave de API higienizada contra espaços ou aspas nos Secrets
 api_key = ""
@@ -174,7 +174,6 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
         if not matches.empty:
             labs_encontrados = matches["LABORATORIO_NORM"].unique().tolist()
             
-            # Hierarquia comercial: Sanofi > Blau > Eurofarma
             tem_sanofi = any("SANOFI" in l for l in labs_encontrados)
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
@@ -228,7 +227,6 @@ def gerar_excel_estilizado(df_dados):
         num_cols = len(df_dados.columns)
         colunas_nomes = list(df_dados.columns)
 
-        # 1. Cabeçalho
         for col_num in range(1, num_cols + 1):
             celula = ws.cell(row=1, column=col_num)
             celula.font = fonte_cabecalho
@@ -236,7 +234,6 @@ def gerar_excel_estilizado(df_dados):
             celula.alignment = alinhamento_centro
             ws.row_dimensions[1].height = 28
 
-        # Mapeamento dinâmico de colunas para montagem de fórmulas perfeitas
         def get_col_letter(col_name):
             if col_name in colunas_nomes:
                 return get_column_letter(colunas_nomes.index(col_name) + 1)
@@ -249,7 +246,6 @@ def gerar_excel_estilizado(df_dados):
         col_margem = get_col_letter("Margem Alvo (%)")
         col_proposta = get_col_letter("Preço Proposta Unit. (R$)")
 
-        # 2. Formatação dos Dados e Injeção das Fórmulas
         for row_idx in range(2, num_linhas + 2):
             ws.row_dimensions[row_idx].height = 20
             for col_idx in range(1, num_cols + 1):
@@ -284,7 +280,6 @@ def gerar_excel_estilizado(df_dados):
                     if col_custo and col_margem:
                         cell.value = f"={col_custo}{row_idx}*(1+{col_margem}{row_idx})"
 
-        # 3. Larguras das Colunas
         for col in ws.columns:
             col_letter = get_column_letter(col[0].column)
             max_len = max(len(str(cell.value or '')) for cell in col)
@@ -304,7 +299,7 @@ def gerar_excel_estilizado(df_dados):
 # 5. Processamento
 if arquivo_pdf and api_key:
     if st.button("🚀 Processar Edital", type="primary"):
-        with st.spinner("Extraindo itens e gerando Mapa de Preços executivo..."):
+        with st.spinner("Conectando ao modelo e processando edital..."):
             try:
                 texto_edital = extrair_texto_pdf(arquivo_pdf)
 
@@ -318,6 +313,22 @@ if arquivo_pdf and api_key:
                     guia_substancias = f"Lista de referência de substâncias prioritárias:\n[{', '.join(subs_unicas)}]"
 
                 client = genai.Client(api_key=api_key)
+
+                # ========================================================
+                # DESCOBERTA DINÂMICA DO MODELO OFICIAL ATIVO NA CONTA
+                # ========================================================
+                modelo_eleito = "gemini-3.6-flash"
+                try:
+                    modelos_ativos = [m.name.replace("models/", "") for m in client.models.list()]
+                    flashes_validos = [m for m in modelos_ativos if "flash" in m.lower() and "embed" not in m.lower()]
+                    if "gemini-3.6-flash" in flashes_validos:
+                        modelo_eleito = "gemini-3.6-flash"
+                    elif flashes_validos:
+                        modelo_eleito = flashes_validos[0]
+                except Exception:
+                    modelo_eleito = "gemini-3.6-flash"
+
+                st.toast(f"Modelo Ativo Conectado: {modelo_eleito}", icon="🤖")
 
                 if segmento == "Medicamentos":
                     prompt = f"""
@@ -349,33 +360,29 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                # Modelos suportados com retry contra sobrecarga (503 / 429)
-                modelos_disponiveis = ["gemini-3.6-flash", "gemini-2.0-flash"]
+                # Execução com Retry Resiliente contra 503 / 429
                 resposta = None
                 ultimo_erro = None
 
-                for nome_modelo in modelos_disponiveis:
-                    for tentativa in range(3):
-                        try:
-                            resposta = client.models.generate_content(
-                                model=nome_modelo,
-                                contents=prompt,
-                                config=types.GenerateContentConfig(
-                                    response_mime_type="application/json",
-                                    response_schema=ListaItens,
-                                )
+                for tentativa in range(4):
+                    try:
+                        resposta = client.models.generate_content(
+                            model=modelo_eleito,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_schema=ListaItens,
                             )
-                            if resposta and resposta.text:
-                                break
-                        except Exception as err:
-                            ultimo_erro = err
-                            msg_erro = str(err)
-                            if "503" in msg_erro or "429" in msg_erro or "UNAVAILABLE" in msg_erro:
-                                time.sleep(3 * (tentativa + 1))
-                            else:
-                                break
-                    if resposta and resposta.text:
-                        break
+                        )
+                        if resposta and resposta.text:
+                            break
+                    except Exception as err:
+                        ultimo_erro = err
+                        msg_erro = str(err)
+                        if any(c in msg_erro for c in ["503", "429", "UNAVAILABLE"]):
+                            time.sleep(3 * (tentativa + 1))
+                        else:
+                            raise err
 
                 if not resposta:
                     raise ultimo_erro
@@ -395,7 +402,6 @@ if arquivo_pdf and api_key:
                         "Valor Ref. Unit. (R$)"
                     ]
 
-                    # Total estimado condicional (calculado se houver valores unitários no edital)
                     if (df["Valor Ref. Unit. (R$)"] > 0).any():
                         df["Valor Total Estimado (R$)"] = df["Qtd"] * df["Valor Ref. Unit. (R$)"]
 
@@ -408,7 +414,7 @@ if arquivo_pdf and api_key:
                     df["Margem Alvo (%)"] = 0.15
                     df["Preço Proposta Unit. (R$)"] = 0.0
 
-                    st.success(f"Foram identificados e mapeados {len(df)} itens no edital!")
+                    st.success(f"Foram identificados e mapeados {len(df)} itens no edital usando {modelo_eleito}!")
                     st.dataframe(df, use_container_width=True)
 
                     excel_bytes = gerar_excel_estilizado(df)
