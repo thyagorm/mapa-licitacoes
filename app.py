@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import os
+import re
 import unicodedata
 from io import BytesIO
 from pydantic import BaseModel, Field
@@ -26,7 +27,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v2.0 - Auto-Descoberta Dinâmica de Modelos & Cruzamento de Portfólio")
+st.caption("🚀 Pipeline Ativo: v2.1 - Auto-Descoberta & Rate-Limit Resiliente (Free Tier)")
 
 # Chave de API higienizada contra espaços ou aspas nos Secrets
 api_key = ""
@@ -299,6 +300,7 @@ def gerar_excel_estilizado(df_dados):
 # 5. Processamento
 if arquivo_pdf and api_key:
     if st.button("🚀 Processar Edital", type="primary"):
+        status_box = st.empty()
         with st.spinner("Conectando ao modelo e processando edital..."):
             try:
                 texto_edital = extrair_texto_pdf(arquivo_pdf)
@@ -314,9 +316,7 @@ if arquivo_pdf and api_key:
 
                 client = genai.Client(api_key=api_key)
 
-                # ========================================================
-                # DESCOBERTA DINÂMICA DO MODELO OFICIAL ATIVO NA CONTA
-                # ========================================================
+                # Descoberta dinâmica do modelo
                 modelo_eleito = "gemini-3.6-flash"
                 try:
                     modelos_ativos = [m.name.replace("models/", "") for m in client.models.list()]
@@ -328,7 +328,7 @@ if arquivo_pdf and api_key:
                 except Exception:
                     modelo_eleito = "gemini-3.6-flash"
 
-                st.toast(f"Modelo Ativo Conectado: {modelo_eleito}", icon="🤖")
+                st.toast(f"Modelo Ativo: {modelo_eleito}", icon="🤖")
 
                 if segmento == "Medicamentos":
                     prompt = f"""
@@ -360,12 +360,14 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                # Execução com Retry Resiliente contra 503 / 429
+                # Execução resiliente com parsing inteligente de Retry-After (429 / 503)
                 resposta = None
                 ultimo_erro = None
+                max_tentativas = 5
 
-                for tentativa in range(4):
+                for tentativa in range(1, max_tentativas + 1):
                     try:
+                        status_box.info(f"⏳ Processando no Gemini ({modelo_eleito}) - Tentativa {tentativa}/{max_tentativas}...")
                         resposta = client.models.generate_content(
                             model=modelo_eleito,
                             contents=prompt,
@@ -375,16 +377,37 @@ if arquivo_pdf and api_key:
                             )
                         )
                         if resposta and resposta.text:
+                            status_box.empty()
                             break
                     except Exception as err:
                         ultimo_erro = err
                         msg_erro = str(err)
-                        if any(c in msg_erro for c in ["503", "429", "UNAVAILABLE"]):
-                            time.sleep(3 * (tentativa + 1))
+                        
+                        # Detecta saturação de cota (429) ou sobrecarga temporária (503)
+                        if any(c in msg_erro for c in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"]):
+                            # Extrai o tempo recomendado na mensagem (ex: retry in 19.5s ou retryDelay: '19s')
+                            match_tempo = re.search(r'retry in\s+([\d\.]+)\s*s', msg_erro, re.IGNORECASE)
+                            if not match_tempo:
+                                match_tempo = re.search(r'retryDelay[\'\":\s]+(\d+)', msg_erro)
+                            
+                            if match_tempo:
+                                tempo_espera = int(float(match_tempo.group(1))) + 3
+                            else:
+                                tempo_espera = 20 * tentativa
+
+                            # Exibe contagem regressiva amigável na tela
+                            for t in range(tempo_espera, 0, -1):
+                                status_box.warning(
+                                    f"⚠️ **Limite de requisições por minuto atingido (Free Tier)**.\n\n"
+                                    f"Aguardando a cota renovar automaticamente em **{t} segundos** (Tentativa {tentativa}/{max_tentativas})..."
+                                )
+                                time.sleep(1)
                         else:
+                            status_box.empty()
                             raise err
 
                 if not resposta:
+                    status_box.empty()
                     raise ultimo_erro
 
                 dados = ListaItens.model_validate_json(resposta.text)
