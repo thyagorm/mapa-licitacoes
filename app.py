@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import os
 import re
+import hashlib
 import unicodedata
 from io import BytesIO
 from pydantic import BaseModel, Field
@@ -27,7 +28,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v2.1 - Auto-Descoberta & Rate-Limit Resiliente (Free Tier)")
+st.caption("🚀 Pipeline Ativo: v2.2 - Cache Nativo em Memória & Proteção de Cota Free Tier")
 
 # Chave de API higienizada contra espaços ou aspas nos Secrets
 api_key = ""
@@ -127,14 +128,69 @@ else:
 
 arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
 
-def extrair_texto_pdf(arquivo_carregado):
-    leitor = PdfReader(arquivo_carregado)
+def extrair_texto_pdf(bytes_arquivo):
+    leitor = PdfReader(BytesIO(bytes_arquivo))
     texto_total = []
     for i, pagina in enumerate(leitor.pages):
         conteudo = pagina.extract_text()
         if conteudo:
             texto_total.append(f"--- PÁGINA {i+1} ---\n{conteudo}")
     return "\n\n".join(texto_total)
+
+# ========================================================
+# FUNÇÃO DE EXTRAÇÃO COM CACHE NATIVO DO STREAMLIT
+# ========================================================
+@st.cache_data(show_spinner=False)
+def extrair_itens_com_gemini_cached(pdf_bytes_hash, texto_edital, prompt_instrucao, key_api):
+    """
+    Executa a chamada ao Gemini e guarda o resultado em memória.
+    Mesmo PDF testado 50x = APENAS 1 REQUISIÇÃO AO GEMINI.
+    """
+    client = genai.Client(api_key=key_api)
+    modelo_eleito = "gemini-3.6-flash"
+
+    try:
+        modelos_ativos = [m.name.replace("models/", "") for m in client.models.list()]
+        flashes_validos = [m for m in modelos_ativos if "flash" in m.lower() and "embed" not in m.lower()]
+        if "gemini-3.6-flash" in flashes_validos:
+            modelo_eleito = "gemini-3.6-flash"
+        elif flashes_validos:
+            modelo_eleito = flashes_validos[0]
+    except Exception:
+        modelo_eleito = "gemini-3.6-flash"
+
+    resposta = None
+    ultimo_erro = None
+    max_tentativas = 4
+
+    for tentativa in range(1, max_tentativas + 1):
+        try:
+            resposta = client.models.generate_content(
+                model=modelo_eleito,
+                contents=prompt_instrucao,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ListaItens,
+                )
+            )
+            if resposta and resposta.text:
+                break
+        except Exception as err:
+            ultimo_erro = err
+            msg_erro = str(err)
+            if any(c in msg_erro for c in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"]):
+                match_tempo = re.search(r'retry in\s+([\d\.]+)\s*s', msg_erro, re.IGNORECASE)
+                if not match_tempo:
+                    match_tempo = re.search(r'retryDelay[\'\":\s]+(\d+)', msg_erro)
+                tempo_espera = int(float(match_tempo.group(1))) + 3 if match_tempo else 20 * tentativa
+                time.sleep(tempo_espera)
+            else:
+                raise err
+
+    if not resposta:
+        raise ultimo_erro
+
+    return resposta.text, modelo_eleito
 
 def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     if df_port is None:
@@ -151,7 +207,6 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     for lab in labs_escolhidos:
         termos_busca_labs.extend(MAPEAMENTO_LABS.get(lab, [normalizar_texto(lab)]))
 
-    # Regra Sanofi: Bloqueio de Medley / Genéricos
     mascara_medley = base["PRODUTO_NORM"].str.contains("MEDLEY") | \
                      base["LABORATORIO_NORM"].str.contains("MEDLEY")
     base_valida = base[~mascara_medley]
@@ -174,7 +229,6 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
 
         if not matches.empty:
             labs_encontrados = matches["LABORATORIO_NORM"].unique().tolist()
-            
             tem_sanofi = any("SANOFI" in l for l in labs_encontrados)
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
@@ -242,10 +296,8 @@ def gerar_excel_estilizado(df_dados):
 
         col_qtd = get_col_letter("Qtd")
         col_vref = get_col_letter("Valor Ref. Unit. (R$)")
-        col_vtot = get_col_letter("Valor Total Estimado (R$)")
         col_custo = get_col_letter("Custo Aquisição (R$)")
         col_margem = get_col_letter("Margem Alvo (%)")
-        col_proposta = get_col_letter("Preço Proposta Unit. (R$)")
 
         for row_idx in range(2, num_linhas + 2):
             ws.row_dimensions[row_idx].height = 20
@@ -300,10 +352,11 @@ def gerar_excel_estilizado(df_dados):
 # 5. Processamento
 if arquivo_pdf and api_key:
     if st.button("🚀 Processar Edital", type="primary"):
-        status_box = st.empty()
-        with st.spinner("Conectando ao modelo e processando edital..."):
+        with st.spinner("Analisando edital com cache ativado..."):
             try:
-                texto_edital = extrair_texto_pdf(arquivo_pdf)
+                pdf_bytes = arquivo_pdf.getvalue()
+                pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+                texto_edital = extrair_texto_pdf(pdf_bytes)
 
                 if not texto_edital.strip():
                     st.error("O PDF parece ser uma imagem digitalizada sem camada de texto pesquisável.")
@@ -313,22 +366,6 @@ if arquivo_pdf and api_key:
                 if segmento == "Medicamentos" and df_portfolio is not None:
                     subs_unicas = df_portfolio["SUBSTÂNCIA"].dropna().unique()[:250].tolist()
                     guia_substancias = f"Lista de referência de substâncias prioritárias:\n[{', '.join(subs_unicas)}]"
-
-                client = genai.Client(api_key=api_key)
-
-                # Descoberta dinâmica do modelo
-                modelo_eleito = "gemini-3.6-flash"
-                try:
-                    modelos_ativos = [m.name.replace("models/", "") for m in client.models.list()]
-                    flashes_validos = [m for m in modelos_ativos if "flash" in m.lower() and "embed" not in m.lower()]
-                    if "gemini-3.6-flash" in flashes_validos:
-                        modelo_eleito = "gemini-3.6-flash"
-                    elif flashes_validos:
-                        modelo_eleito = flashes_validos[0]
-                except Exception:
-                    modelo_eleito = "gemini-3.6-flash"
-
-                st.toast(f"Modelo Ativo: {modelo_eleito}", icon="🤖")
 
                 if segmento == "Medicamentos":
                     prompt = f"""
@@ -360,57 +397,12 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                # Execução resiliente com parsing inteligente de Retry-After (429 / 503)
-                resposta = None
-                ultimo_erro = None
-                max_tentativas = 5
+                # Chamada com Cache: Se já rodou esse PDF, retorna em 0.01s sem gastar cota
+                json_resposta, modelo_usado = extrair_itens_com_gemini_cached(
+                    pdf_hash, texto_edital, prompt, api_key
+                )
 
-                for tentativa in range(1, max_tentativas + 1):
-                    try:
-                        status_box.info(f"⏳ Processando no Gemini ({modelo_eleito}) - Tentativa {tentativa}/{max_tentativas}...")
-                        resposta = client.models.generate_content(
-                            model=modelo_eleito,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json",
-                                response_schema=ListaItens,
-                            )
-                        )
-                        if resposta and resposta.text:
-                            status_box.empty()
-                            break
-                    except Exception as err:
-                        ultimo_erro = err
-                        msg_erro = str(err)
-                        
-                        # Detecta saturação de cota (429) ou sobrecarga temporária (503)
-                        if any(c in msg_erro for c in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"]):
-                            # Extrai o tempo recomendado na mensagem (ex: retry in 19.5s ou retryDelay: '19s')
-                            match_tempo = re.search(r'retry in\s+([\d\.]+)\s*s', msg_erro, re.IGNORECASE)
-                            if not match_tempo:
-                                match_tempo = re.search(r'retryDelay[\'\":\s]+(\d+)', msg_erro)
-                            
-                            if match_tempo:
-                                tempo_espera = int(float(match_tempo.group(1))) + 3
-                            else:
-                                tempo_espera = 20 * tentativa
-
-                            # Exibe contagem regressiva amigável na tela
-                            for t in range(tempo_espera, 0, -1):
-                                status_box.warning(
-                                    f"⚠️ **Limite de requisições por minuto atingido (Free Tier)**.\n\n"
-                                    f"Aguardando a cota renovar automaticamente em **{t} segundos** (Tentativa {tentativa}/{max_tentativas})..."
-                                )
-                                time.sleep(1)
-                        else:
-                            status_box.empty()
-                            raise err
-
-                if not resposta:
-                    status_box.empty()
-                    raise ultimo_erro
-
-                dados = ListaItens.model_validate_json(resposta.text)
+                dados = ListaItens.model_validate_json(json_resposta)
 
                 if not dados.itens:
                     st.warning("Nenhum item foi identificado no edital.")
@@ -437,7 +429,7 @@ if arquivo_pdf and api_key:
                     df["Margem Alvo (%)"] = 0.15
                     df["Preço Proposta Unit. (R$)"] = 0.0
 
-                    st.success(f"Foram identificados e mapeados {len(df)} itens no edital usando {modelo_eleito}!")
+                    st.success(f"Foram identificados e mapeados {len(df)} itens no edital via {modelo_usado} (Cache Ativo)!")
                     st.dataframe(df, use_container_width=True)
 
                     excel_bytes = gerar_excel_estilizado(df)
