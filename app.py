@@ -29,7 +29,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v3.4 - Bloqueio Estrito de Genéricos Sanofi/Medley & Cache em Dupla Camada")
+st.caption("🚀 Pipeline Ativo: v3.6 - Calibração Fina Pint Pharma & Hierarquia Comercial Blindada")
 
 # Chave de API higienizada
 api_key = ""
@@ -43,6 +43,14 @@ else:
 # 3. Base de Dados, Memória e Normalização
 ARQUIVO_PORTFOLIO = "portfolio_laboratorios.xlsx"
 ARQUIVO_MEMORIA = "memoria_medicamentos.json"
+
+STOP_WORDS_FARMA = {
+    "ACETATO", "CLORIDRATO", "SULFATO", "FOSFATO", "DIPROPIONATO", "BROMETO", 
+    "CITRATO", "SODICO", "SODICA", "POTASSICO", "POTASSICA", "MALEATO", 
+    "SUCCINATO", "HEMISSULFATO", "MESILATO", "TARTARATO", "GLICONATO", "PO", 
+    "SOLUCAO", "INJETAVEL", "COMPRIMIDO", "SUSPENSAO", "GOTAS", "CAPSULA", 
+    "FRASCO", "AMPOLA", "BISNAGA", "CREME", "POMADA", "XAROPE"
+}
 
 def normalizar_texto(texto):
     if not texto or pd.isna(texto):
@@ -84,6 +92,8 @@ def salvar_aprendizado(novos_itens):
             pass
 
 MAPEAMENTO_LABS = {
+    "Pint Pharma": ["PINT", "PINT PHARMA"],
+    "Sanofi": ["SANOFI"],
     "Blau": ["BLAU"],
     "Eurofarma": ["EUROFARMA"],
     "Baxter": ["BAXTER"],
@@ -92,9 +102,7 @@ MAPEAMENTO_LABS = {
     "Halex Istar": ["HALEX", "ISTAR"],
     "United Medical": ["UNITED MEDICAL", "UNITED"],
     "GSK": ["GSK", "GLAXO", "GLAXOSMITHKLINE"],
-    "Aspen": ["ASPEN"],
-    "Sanofi": ["SANOFI"],
-    "Pint Pharma": ["PINT", "PINT PHARMA"]
+    "Aspen": ["ASPEN"]
 }
 
 @st.cache_data
@@ -125,8 +133,8 @@ segmento = st.sidebar.selectbox(
 if segmento == "Medicamentos":
     st.sidebar.subheader("💊 Portfólio de Laboratórios")
     labs_base = [
-        "Blau", "Eurofarma", "Baxter", "Biocon", "Accord",
-        "Halex Istar", "United Medical", "GSK", "Aspen", "Sanofi", "Pint Pharma"
+        "Pint Pharma", "Sanofi", "Blau", "Eurofarma", "Baxter", 
+        "Biocon", "Accord", "Halex Istar", "United Medical", "GSK", "Aspen"
     ]
     
     labs_selecionados = st.sidebar.multiselect(
@@ -142,17 +150,11 @@ if segmento == "Medicamentos":
 
     st.sidebar.info(f"🧠 **Memória de Aprendizado:** {len(base_memoria)} termos memorizados.")
 
-    filtro_exibicao = st.sidebar.radio(
-        "Visualização dos Resultados:",
-        ["Todos os Medicamentos do Edital", "Apenas Itens com Match nos Laboratórios"],
-        index=0
-    )
-
     st.sidebar.markdown(
-        "**Hierarquia e Diretrizes Comerciais:**\n"
-        "- 🥇 **Sanofi** prioridade máxima (apenas linha de referência).\n"
+        "**Hierarquia Comercial Estratégica:**\n"
+        "- 🥇 **Pint Pharma & Sanofi** (Especialidades e Referência) prioridade máxima.\n"
         "- 🥈 **Blau** sobre **Eurofarma**.\n"
-        "- 🚫 **Bloqueio Ativo:** Genéricos da Sanofi e Medley descartados."
+        "- 🚫 **Bloqueio:** Medley e genéricos da Sanofi eliminados."
     )
 
 elif segmento == "Material Elétrico / Engenharia":
@@ -253,7 +255,7 @@ def extrair_itens_com_gemini_cached(pdf_bytes_hash, texto_edital, prompt_instruc
     return resposta.text, modelo_eleito
 
 # ========================================================
-# CRUZAMENTO INTELIGENTE (FILTRO RIGOROSO SANOFI/MEDLEY)
+# CRUZAMENTO INTELIGENTE: PINT PHARMA & HIERARQUIA RIGOROSA
 # ========================================================
 def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     if df_port is None:
@@ -267,10 +269,7 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     base["PRODUTO_NORM"] = base["PRODUTO"].apply(normalizar_texto)
     base["APRESENTACAO_NORM"] = base["APRESENTAÇÃO"].apply(normalizar_texto) if "APRESENTAÇÃO" in base.columns else ""
 
-    # 1. BLOQUEIO RIGOROSO DE MEDLEY E GENÉRICOS SANOFI
-    # - Qualquer produto da Medley
-    # - Qualquer produto que mencione expressamente GENERICO
-    # - Na Sanofi: produtos onde o nome do produto é apenas a própria substância (indicativo de genérico)
+    # Bloqueio de Medley e Genéricos Sanofi
     mascara_medley = (
         base["LABORATORIO_NORM"].str.contains("MEDLEY", na=False) |
         base["PRODUTO_NORM"].str.contains("MEDLEY", na=False)
@@ -280,11 +279,10 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
         base["LABORATORIO_NORM"].str.contains("SANOFI", na=False) & (
             base["PRODUTO_NORM"].str.contains("GENERIC", na=False) |
             base["APRESENTACAO_NORM"].str.contains("GENERIC", na=False) |
-            (base["PRODUTO_NORM"] == base["SUBSTANCIA_NORM"])  # Genérico não tem marca de fantasia
+            (base["PRODUTO_NORM"] == base["SUBSTANCIA_NORM"])
         )
     )
 
-    # Base sanitizada sem Medley e sem genéricos da Sanofi
     base_valida = base[~(mascara_medley | mascara_generico_sanofi)]
 
     termos_busca_labs = []
@@ -298,14 +296,23 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
         substancia_edital = normalizar_texto(row["Princípio Ativo"])
         desc_completa = normalizar_texto(row["Descrição Completa Edital"])
         
-        palavras_edital = [p for p in substancia_edital.split() if len(p) > 3]
-
-        matches = base_valida[
-            base_valida["SUBSTANCIA_NORM"].apply(lambda s: s != "" and (s in substancia_edital or substancia_edital in s or s in desc_completa)) |
-            base_valida["PRODUTO_NORM"].apply(lambda p: p != "" and len(p) > 3 and (p in desc_completa or p in substancia_edital)) |
-            base_valida["SUBSTANCIA_NORM"].apply(lambda s: any(p in s for p in palavras_edital[:2]) if len(palavras_edital) >= 1 else False)
+        # Palavras significativas da substância (ignora sais e formas genéricas)
+        palavras_edital = [
+            p for p in substancia_edital.split() 
+            if len(p) > 3 and p not in STOP_WORDS_FARMA
         ]
 
+        # Matching no Portfólio
+        matches = base_valida[
+            # Match exato ou substring da substância completa
+            base_valida["SUBSTANCIA_NORM"].apply(lambda s: s != "" and (s in substancia_edital or substancia_edital in s)) |
+            # Match por marca comercial de referência
+            base_valida["PRODUTO_NORM"].apply(lambda p: p != "" and len(p) > 3 and (p in desc_completa or p in substancia_edital)) |
+            # Match pelo princípio ativo nuclear (sem sal)
+            base_valida["SUBSTANCIA_NORM"].apply(lambda s: any(p in s for p in palavras_edital) if palavras_edital else False)
+        ]
+
+        # Filtra pelos laboratórios ativos
         matches = matches[matches["LABORATORIO_NORM"].apply(
             lambda lab_nome: any(termo in lab_nome for termo in termos_busca_labs)
         )]
@@ -313,13 +320,27 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
         if not matches.empty:
             labs_encontrados = matches["LABORATORIO_NORM"].unique().tolist()
             
+            # Flags de presença
+            tem_pint = any("PINT" in l for l in labs_encontrados)
             tem_sanofi = any("SANOFI" in l for l in labs_encontrados)
+            tem_united = any("UNITED" in l for l in labs_encontrados)
+            tem_baxter = any("BAXTER" in l for l in labs_encontrados)
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
 
-            # Hierarquia: Sanofi (Inovador/Referência) > Blau > Eurofarma
-            if tem_sanofi:
+            # HIERARQUIA COMERCIAL PRIORITÁRIA:
+            # 1º Pint Pharma & Sanofi (Prioridade Máxima em Especialidades e Referência)
+            # 2º Outras especialidades exclusivas (United Medical, Baxter)
+            # 3º Blau (Hospitalar injetável)
+            # 4º Eurofarma (Hospitalar amplo)
+            if tem_pint:
+                lab_final_filtro = [l for l in labs_encontrados if "PINT" in l][0]
+            elif tem_sanofi:
                 lab_final_filtro = [l for l in labs_encontrados if "SANOFI" in l][0]
+            elif tem_united:
+                lab_final_filtro = [l for l in labs_encontrados if "UNITED" in l][0]
+            elif tem_baxter:
+                lab_final_filtro = [l for l in labs_encontrados if "BAXTER" in l][0]
             elif tem_blau:
                 lab_final_filtro = [l for l in labs_encontrados if "BLAU" in l][0]
             elif tem_euro:
@@ -338,7 +359,7 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     df_extraido["Produto / Marca Ref."] = produtos_atribuidos
     return df_extraido
 
-# Gerador Excel
+# Gerador Excel Executivo com Fórmulas e Estilos
 def gerar_excel_estilizado(df_dados):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -514,9 +535,9 @@ if arquivo_pdf and api_key:
                 texto_status.empty()
                 st.warning("Nenhum item foi identificado no edital.")
             else:
-                # ETAPA 4: Cruzamento e Regras Comerciais (Com bloqueio de genéricos Sanofi/Medley)
+                # ETAPA 4: Cruzamento e Filtragem Estrita
                 barra_progresso.progress(90)
-                texto_status.text("🧠 Aplicando hierarquia e excluindo genéricos Sanofi/Medley (90%)...")
+                texto_status.text("🧠 Priorizando Pint Pharma / Sanofi e filtrando portfólio (90%)...")
 
                 lista_dicts = [item.model_dump() for item in dados.itens]
                 salvar_aprendizado(lista_dicts)
@@ -536,8 +557,14 @@ if arquivo_pdf and api_key:
 
                 if segmento == "Medicamentos":
                     df = enriquecer_com_portfolio(df, df_portfolio, labs_selecionados)
-                    if filtro_exibicao == "Apenas Itens com Match nos Laboratórios":
-                        df = df[df["Laboratório Sugerido"] != "Não mapeado / Verificar"]
+                    # FILTRO ESTRITO: Elimina sumariamente qualquer item sem match
+                    df = df[df["Laboratório Sugerido"] != "Não mapeado / Verificar"].copy()
+
+                if df.empty:
+                    barra_progresso.empty()
+                    texto_status.empty()
+                    st.warning("⚠️ Nenhum medicamento do edital possui correspondência no portfólio dos laboratórios selecionados.")
+                    st.stop()
 
                 df["Custo Aquisição (R$)"] = 0.0
                 df["Margem Alvo (%)"] = 0.15
@@ -561,7 +588,7 @@ if arquivo_pdf and api_key:
                 barra_progresso.empty()
                 texto_status.empty()
 
-                st.success(f"✅ Mapeados **{len(df)} itens** no edital via **{modelo_usado}** (Cache Ativo)!")
+                st.success(f"✅ Mapeados **{len(df)} itens comerciais** com match no portfólio via **{modelo_usado}**!")
                 st.dataframe(df, use_container_width=True)
 
                 st.download_button(
