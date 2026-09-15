@@ -29,7 +29,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v3.2 - Barra de Progresso em Tempo Real & Varredura Otimizada")
+st.caption("🚀 Pipeline Ativo: v3.3 - Cache em Dupla Camada (Instantâneo) & Barra de Progresso")
 
 # Chave de API higienizada
 api_key = ""
@@ -165,9 +165,10 @@ else:
 arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
 
 # ========================================================
-# PRÉ-PROCESSADOR COM ATUALIZAÇÃO VISUAL DE PROGRESSO
+# PRÉ-PROCESSADOR CACHEADO (EXECUTA 1 VEZ POR PDF)
 # ========================================================
-def pre_processar_pdf_inteligente(bytes_arquivo, prog_bar=None, status_txt=None):
+@st.cache_data(show_spinner=False)
+def pre_processar_pdf_inteligente(bytes_arquivo):
     leitor = PdfReader(BytesIO(bytes_arquivo))
     total_paginas = len(leitor.pages)
     
@@ -181,15 +182,8 @@ def pre_processar_pdf_inteligente(bytes_arquivo, prog_bar=None, status_txt=None)
     paginas_indices = []
 
     for i, pagina in enumerate(leitor.pages):
-        # Atualiza a barra de 0% a 25% na leitura das páginas
-        if prog_bar and status_txt:
-            pct = int((i + 1) / total_paginas * 25)
-            prog_bar.progress(pct)
-            status_txt.text(f"📖 Lendo e filtrando edital: página {i + 1} de {total_paginas} ({pct}%)...")
-
         raw_text = pagina.extract_text() or ""
         norm_text = normalizar_texto(raw_text)
-        
         score = sum(1 for t in termos_itens if t in norm_text)
         
         if score >= 2 or re.search(r'\b(ITEM\s+\d+|LOTE\s+\d+)\b', norm_text):
@@ -207,7 +201,7 @@ def pre_processar_pdf_inteligente(bytes_arquivo, prog_bar=None, status_txt=None)
     return texto_filtrado, paginas_indices, total_paginas
 
 # ========================================================
-# FUNÇÃO DE EXTRAÇÃO COM CACHE
+# FUNÇÃO DE EXTRAÇÃO COM CACHE (RETORNO IMEDIATO)
 # ========================================================
 @st.cache_data(show_spinner=False)
 def extrair_itens_com_gemini_cached(pdf_bytes_hash, texto_edital, prompt_instrucao, key_api):
@@ -420,19 +414,20 @@ def gerar_excel_estilizado(df_dados):
 
     return output.getvalue()
 
-# 5. Processamento com Barra de Progresso
+# 5. Processamento com Barra de Progresso e Cache Instantâneo
 if arquivo_pdf and api_key:
     if st.button("🚀 Processar Edital", type="primary"):
-        # Controles visuais de progresso
         barra_progresso = st.progress(0)
         texto_status = st.empty()
         
         try:
-            # ETAPA 1: Leitura do PDF e Pré-Processamento (0% a 25%)
             pdf_bytes = arquivo_pdf.getvalue()
-            texto_edital, paginas_filtradas, total_pags = pre_processar_pdf_inteligente(
-                pdf_bytes, prog_bar=barra_progresso, status_txt=texto_status
-            )
+            
+            # ETAPA 1: Leitura e Pré-processamento com Cache
+            barra_progresso.progress(20)
+            texto_status.text("📖 Verificando memória e filtrando páginas relevantes (20%)...")
+            
+            texto_edital, paginas_filtradas, total_pags = pre_processar_pdf_inteligente(pdf_bytes)
 
             if not texto_edital.strip():
                 barra_progresso.empty()
@@ -440,9 +435,9 @@ if arquivo_pdf and api_key:
                 st.error("O PDF parece ser uma imagem digitalizada sem camada de texto pesquisável.")
                 st.stop()
 
-            # ETAPA 2: Preparação do Prompt e Diretrizes (25% a 40%)
-            barra_progresso.progress(35)
-            texto_status.text(f"⚙️ Analisando {len(paginas_filtradas)} páginas com itens identificados (35%)...")
+            # ETAPA 2: Preparação dos Metadados e Hash
+            barra_progresso.progress(40)
+            texto_status.text(f"⚙️ {len(paginas_filtradas)} páginas preparadas. Verificando cache de extração (40%)...")
             
             pdf_hash = hashlib.sha256((pdf_bytes + texto_edital.encode('utf-8'))).hexdigest()
 
@@ -482,16 +477,16 @@ if arquivo_pdf and api_key:
                 \"\"\"
                 """
 
-            # ETAPA 3: Chamada ao Gemini / Consulta Cache (40% a 80%)
-            barra_progresso.progress(50)
-            texto_status.text("🤖 Conectando ao Gemini 3.6 Flash para extração de itens e dosagens (50%)...")
+            # ETAPA 3: Extração Inteligente (Gemini ou Retorno Instantâneo de Cache)
+            barra_progresso.progress(65)
+            texto_status.text("🤖 Consultando IA / Cache de alta velocidade (65%)...")
 
             json_resposta, modelo_usado = extrair_itens_com_gemini_cached(
                 pdf_hash, texto_edital, prompt, api_key
             )
 
-            barra_progresso.progress(75)
-            texto_status.text("📦 Resposta recebida da IA. Validando integridade da estrutura JSON (75%)...")
+            barra_progresso.progress(80)
+            texto_status.text("📦 Dados carregados com sucesso. Estruturando linhas (80%)...")
             dados = ListaItens.model_validate_json(json_resposta)
 
             if not dados.itens:
@@ -499,9 +494,9 @@ if arquivo_pdf and api_key:
                 texto_status.empty()
                 st.warning("Nenhum item foi identificado no edital.")
             else:
-                # ETAPA 4: Cruzamento e Regras Comerciais (80% a 92%)
-                barra_progresso.progress(85)
-                texto_status.text("🧠 Cruzando princípios ativos com portfólio (Sanofi > Blau > Eurofarma) (85%)...")
+                # ETAPA 4: Cruzamento e Regras Comerciais
+                barra_progresso.progress(90)
+                texto_status.text("🧠 Aplicando hierarquia comercial (Sanofi > Blau > Eurofarma) (90%)...")
 
                 lista_dicts = [item.model_dump() for item in dados.itens]
                 salvar_aprendizado(lista_dicts)
@@ -534,19 +529,19 @@ if arquivo_pdf and api_key:
                 except Exception:
                     pass
 
-                # ETAPA 5: Construção do Excel Executivo (92% a 100%)
-                barra_progresso.progress(95)
-                texto_status.text("📊 Gerando e estilizando planilha Excel com fórmulas dinâmicas (95%)...")
+                # ETAPA 5: Construção do Excel Executivo
+                barra_progresso.progress(96)
+                texto_status.text("📊 Formatando planilha executiva com fórmulas (.xlsx) (96%)...")
                 excel_bytes = gerar_excel_estilizado(df)
 
                 # Finalização
                 barra_progresso.progress(100)
-                texto_status.text("✅ Processamento 100% concluído!")
-                time.sleep(0.5)
+                texto_status.text("✅ Processamento concluído!")
+                time.sleep(0.3)
                 barra_progresso.empty()
                 texto_status.empty()
 
-                st.success(f"✅ Mapeados **{len(df)} itens** no edital via **{modelo_usado}**!")
+                st.success(f"✅ Mapeados **{len(df)} itens** no edital via **{modelo_usado}** (Cache Ativo)!")
                 st.dataframe(df, use_container_width=True)
 
                 st.download_button(
