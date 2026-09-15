@@ -29,7 +29,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v3.1 - Busca Completa Sem Cortes Prematuros & Matching Flexível")
+st.caption("🚀 Pipeline Ativo: v3.2 - Barra de Progresso em Tempo Real & Varredura Otimizada")
 
 # Chave de API higienizada
 api_key = ""
@@ -49,7 +49,6 @@ def normalizar_texto(texto):
         return ""
     nfkd = unicodedata.normalize('NFKD', str(texto))
     texto_sem_acento = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    # Remove pontuações desnecessárias para facilitar cruzamento
     texto_limpo = re.sub(r'[^A-Z0-9\s]', ' ', texto_sem_acento.upper())
     return " ".join(texto_limpo.split())
 
@@ -146,7 +145,7 @@ if segmento == "Medicamentos":
     filtro_exibicao = st.sidebar.radio(
         "Visualização dos Resultados:",
         ["Todos os Medicamentos do Edital", "Apenas Itens com Match nos Laboratórios"],
-        index=0  # Agora exibe todos por padrão para você não perder nada de vista!
+        index=0
     )
 
     st.sidebar.markdown(
@@ -166,9 +165,9 @@ else:
 arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
 
 # ========================================================
-# PRÉ-PROCESSADOR SEM CORTE PREMATURO
+# PRÉ-PROCESSADOR COM ATUALIZAÇÃO VISUAL DE PROGRESSO
 # ========================================================
-def pre_processar_pdf_inteligente(bytes_arquivo):
+def pre_processar_pdf_inteligente(bytes_arquivo, prog_bar=None, status_txt=None):
     leitor = PdfReader(BytesIO(bytes_arquivo))
     total_paginas = len(leitor.pages)
     
@@ -182,18 +181,21 @@ def pre_processar_pdf_inteligente(bytes_arquivo):
     paginas_indices = []
 
     for i, pagina in enumerate(leitor.pages):
+        # Atualiza a barra de 0% a 25% na leitura das páginas
+        if prog_bar and status_txt:
+            pct = int((i + 1) / total_paginas * 25)
+            prog_bar.progress(pct)
+            status_txt.text(f"📖 Lendo e filtrando edital: página {i + 1} de {total_paginas} ({pct}%)...")
+
         raw_text = pagina.extract_text() or ""
         norm_text = normalizar_texto(raw_text)
         
-        # Conta densidade de palavras de itens
         score = sum(1 for t in termos_itens if t in norm_text)
         
-        # Se a página contiver indícios de lista/tabela, inclui
         if score >= 2 or re.search(r'\b(ITEM\s+\d+|LOTE\s+\d+)\b', norm_text):
             paginas_selecionadas.append(f"--- PÁGINA {i+1} ---\n{raw_text}")
             paginas_indices.append(i + 1)
 
-    # Se a filtragem pegou muito pouco, envia o edital inteiro para garantir cobertura
     if len(paginas_selecionadas) < 4:
         paginas_selecionadas = []
         paginas_indices = list(range(1, total_paginas + 1))
@@ -273,7 +275,6 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     for lab in labs_escolhidos:
         termos_busca_labs.extend(MAPEAMENTO_LABS.get(lab, [normalizar_texto(lab)]))
 
-    # Permite Sanofi mesmo se tiver Medley no grupo corporativo, desde que seja marca/produto de referência
     mascara_apenas_medley = (base["LABORATORIO_NORM"] == "MEDLEY") & (~base["LABORATORIO_NORM"].str.contains("SANOFI"))
     base_valida = base[~mascara_apenas_medley]
 
@@ -286,14 +287,12 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
         
         palavras_edital = [p for p in substancia_edital.split() if len(p) > 3]
 
-        # Matching bidirecional: substância do edital no portfólio OU substância do portfólio no edital
         matches = base_valida[
             base_valida["SUBSTANCIA_NORM"].apply(lambda s: s != "" and (s in substancia_edital or substancia_edital in s or s in desc_completa)) |
             base_valida["PRODUTO_NORM"].apply(lambda p: p != "" and len(p) > 3 and (p in desc_completa or p in substancia_edital)) |
             base_valida["SUBSTANCIA_NORM"].apply(lambda s: any(p in s for p in palavras_edital[:2]) if len(palavras_edital) >= 1 else False)
         ]
 
-        # Filtra pelos laboratórios ativos
         matches = matches[matches["LABORATORIO_NORM"].apply(
             lambda lab_nome: any(termo in lab_nome for termo in termos_busca_labs)
         )]
@@ -305,7 +304,6 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
 
-            # Hierarquia: Sanofi > Blau > Eurofarma
             if tem_sanofi:
                 lab_final_filtro = [l for l in labs_encontrados if "SANOFI" in l][0]
             elif tem_blau:
@@ -422,118 +420,146 @@ def gerar_excel_estilizado(df_dados):
 
     return output.getvalue()
 
-# 5. Processamento
+# 5. Processamento com Barra de Progresso
 if arquivo_pdf and api_key:
     if st.button("🚀 Processar Edital", type="primary"):
-        status_box = st.empty()
-        with st.spinner("Varrendo edital completo e cruzando com o portfólio..."):
-            try:
-                pdf_bytes = arquivo_pdf.getvalue()
-                
-                # Geramos o hash com o texto das páginas capturadas para invalidar cache antigo se o filtro mudar
-                texto_edital, paginas_filtradas, total_pags = pre_processar_pdf_inteligente(pdf_bytes)
-                pdf_hash = hashlib.sha256((pdf_bytes + texto_edital.encode('utf-8'))).hexdigest()
+        # Controles visuais de progresso
+        barra_progresso = st.progress(0)
+        texto_status = st.empty()
+        
+        try:
+            # ETAPA 1: Leitura do PDF e Pré-Processamento (0% a 25%)
+            pdf_bytes = arquivo_pdf.getvalue()
+            texto_edital, paginas_filtradas, total_pags = pre_processar_pdf_inteligente(
+                pdf_bytes, prog_bar=barra_progresso, status_txt=texto_status
+            )
 
-                if not texto_edital.strip():
-                    st.error("O PDF parece ser uma imagem digitalizada sem camada de texto pesquisável.")
-                    st.stop()
+            if not texto_edital.strip():
+                barra_progresso.empty()
+                texto_status.empty()
+                st.error("O PDF parece ser uma imagem digitalizada sem camada de texto pesquisável.")
+                st.stop()
 
-                st.info(
-                    f"📑 **Varredura Completa:** Analisando **{len(paginas_filtradas)} de {total_pags} páginas** com presença de itens e tabelas."
-                )
+            # ETAPA 2: Preparação do Prompt e Diretrizes (25% a 40%)
+            barra_progresso.progress(35)
+            texto_status.text(f"⚙️ Analisando {len(paginas_filtradas)} páginas com itens identificados (35%)...")
+            
+            pdf_hash = hashlib.sha256((pdf_bytes + texto_edital.encode('utf-8'))).hexdigest()
 
-                guia_substancias = ""
-                if segmento == "Medicamentos" and df_portfolio is not None:
-                    subs_unicas = df_portfolio["SUBSTÂNCIA"].dropna().unique()[:250].tolist()
-                    guia_substancias = f"Lista de referência de substâncias prioritárias dos laboratórios parceiros:\n[{', '.join(subs_unicas)}]"
+            guia_substancias = ""
+            if segmento == "Medicamentos" and df_portfolio is not None:
+                subs_unicas = df_portfolio["SUBSTÂNCIA"].dropna().unique()[:250].tolist()
+                guia_substancias = f"Lista de referência de substâncias prioritárias dos laboratórios parceiros:\n[{', '.join(subs_unicas)}]"
+
+            if segmento == "Medicamentos":
+                prompt = f"""
+                Você é um analista sênior de licitações farmacêuticas e compras hospitalares.
+                Analise o texto do edital e extraia ABSOLUTAMENTE TODOS os itens de medicamentos licitados.
+                NÃO DEIXE NENHUM ITEM DE FORA.
+
+                Laboratórios parceiros: [{", ".join(labs_selecionados)}]
+                {guia_substancias}
+
+                DIRETRIZES MANDATÓRIAS:
+                1. Identifique e extraia todos os itens com descrição, dosagem e forma farmacêutica.
+                2. No campo 'principio_ativo_identificado', extraia a denominação genérica exata da substância ativa (ex: 'Enoxaparina Sódica', 'Insulina Glargina', 'Propofol', 'Dipirona').
+                3. Converta quantidades e valores de referência para números decimais (float).
+                4. Retorne no formato JSON estruturado.
+
+                TEXTO DO EDITAL:
+                \"\"\"
+                {texto_edital}
+                \"\"\"
+                """
+            else:
+                prompt = f"""
+                Você é um analista de licitações. Extraia os itens correspondentes a: "{portfolio_texto}".
+                Estruture no JSON solicitado com quantidades e valores unitários numéricos float.
+
+                TEXTO DO EDITAL:
+                \"\"\"
+                {texto_edital}
+                \"\"\"
+                """
+
+            # ETAPA 3: Chamada ao Gemini / Consulta Cache (40% a 80%)
+            barra_progresso.progress(50)
+            texto_status.text("🤖 Conectando ao Gemini 3.6 Flash para extração de itens e dosagens (50%)...")
+
+            json_resposta, modelo_usado = extrair_itens_com_gemini_cached(
+                pdf_hash, texto_edital, prompt, api_key
+            )
+
+            barra_progresso.progress(75)
+            texto_status.text("📦 Resposta recebida da IA. Validando integridade da estrutura JSON (75%)...")
+            dados = ListaItens.model_validate_json(json_resposta)
+
+            if not dados.itens:
+                barra_progresso.empty()
+                texto_status.empty()
+                st.warning("Nenhum item foi identificado no edital.")
+            else:
+                # ETAPA 4: Cruzamento e Regras Comerciais (80% a 92%)
+                barra_progresso.progress(85)
+                texto_status.text("🧠 Cruzando princípios ativos com portfólio (Sanofi > Blau > Eurofarma) (85%)...")
+
+                lista_dicts = [item.model_dump() for item in dados.itens]
+                salvar_aprendizado(lista_dicts)
+
+                df = pd.DataFrame(lista_dicts)
+                df.columns = [
+                    "Item", 
+                    "Descrição Completa Edital", 
+                    "Princípio Ativo", 
+                    "Unidade", 
+                    "Qtd", 
+                    "Valor Ref. Unit. (R$)"
+                ]
+
+                if (df["Valor Ref. Unit. (R$)"] > 0).any():
+                    df["Valor Total Estimado (R$)"] = df["Qtd"] * df["Valor Ref. Unit. (R$)"]
 
                 if segmento == "Medicamentos":
-                    prompt = f"""
-                    Você é um analista sênior de licitações farmacêuticas e compras hospitalares.
-                    Analise o texto do edital e extraia ABSOLUTAMENTE TODOS os itens de medicamentos licitados.
-                    NÃO DEIXE NENHUM ITEM DE FORA.
+                    df = enriquecer_com_portfolio(df, df_portfolio, labs_selecionados)
+                    if filtro_exibicao == "Apenas Itens com Match nos Laboratórios":
+                        df = df[df["Laboratório Sugerido"] != "Não mapeado / Verificar"]
 
-                    Laboratórios parceiros: [{", ".join(labs_selecionados)}]
-                    {guia_substancias}
+                df["Custo Aquisição (R$)"] = 0.0
+                df["Margem Alvo (%)"] = 0.15
+                df["Preço Proposta Unit. (R$)"] = 0.0
 
-                    DIRETRIZES MANDATÓRIAS:
-                    1. Identifique e extraia todos os itens com descrição, dosagem e forma farmacêutica.
-                    2. No campo 'principio_ativo_identificado', extraia a denominação genérica exata da substância ativa (ex: 'Enoxaparina Sódica', 'Insulina Glargina', 'Propofol', 'Dipirona').
-                    3. Converta quantidades e valores de referência para números decimais (float).
-                    4. Retorne no formato JSON estruturado.
+                try:
+                    df["_item_num"] = pd.to_numeric(df["Item"].str.extract(r'(\d+)')[0], errors="coerce")
+                    df = df.sort_values(by="_item_num").drop(columns=["_item_num"])
+                except Exception:
+                    pass
 
-                    TEXTO DO EDITAL:
-                    \"\"\"
-                    {texto_edital}
-                    \"\"\"
-                    """
-                else:
-                    prompt = f"""
-                    Você é um analista de licitações. Extraia os itens correspondentes a: "{portfolio_texto}".
-                    Estruture no JSON solicitado com quantidades e valores unitários numéricos float.
+                # ETAPA 5: Construção do Excel Executivo (92% a 100%)
+                barra_progresso.progress(95)
+                texto_status.text("📊 Gerando e estilizando planilha Excel com fórmulas dinâmicas (95%)...")
+                excel_bytes = gerar_excel_estilizado(df)
 
-                    TEXTO DO EDITAL:
-                    \"\"\"
-                    {texto_edital}
-                    \"\"\"
-                    """
+                # Finalização
+                barra_progresso.progress(100)
+                texto_status.text("✅ Processamento 100% concluído!")
+                time.sleep(0.5)
+                barra_progresso.empty()
+                texto_status.empty()
 
-                # Execução com Cache e Retries
-                json_resposta, modelo_usado = extrair_itens_com_gemini_cached(
-                    pdf_hash, texto_edital, prompt, api_key
+                st.success(f"✅ Mapeados **{len(df)} itens** no edital via **{modelo_usado}**!")
+                st.dataframe(df, use_container_width=True)
+
+                st.download_button(
+                    label="📥 Baixar Mapa de Preços Profissional (.xlsx)",
+                    data=excel_bytes,
+                    file_name=f"Mapa_Precos_{arquivo_pdf.name.replace('.pdf', '')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-                dados = ListaItens.model_validate_json(json_resposta)
-
-                if not dados.itens:
-                    st.warning("Nenhum item foi identificado no edital.")
-                else:
-                    lista_dicts = [item.model_dump() for item in dados.itens]
-                    salvar_aprendizado(lista_dicts)
-
-                    df = pd.DataFrame(lista_dicts)
-                    df.columns = [
-                        "Item", 
-                        "Descrição Completa Edital", 
-                        "Princípio Ativo", 
-                        "Unidade", 
-                        "Qtd", 
-                        "Valor Ref. Unit. (R$)"
-                    ]
-
-                    if (df["Valor Ref. Unit. (R$)"] > 0).any():
-                        df["Valor Total Estimado (R$)"] = df["Qtd"] * df["Valor Ref. Unit. (R$)"]
-
-                    if segmento == "Medicamentos":
-                        df = enriquecer_com_portfolio(df, df_portfolio, labs_selecionados)
-                        if filtro_exibicao == "Apenas Itens com Match nos Laboratórios":
-                            df = df[df["Laboratório Sugerido"] != "Não mapeado / Verificar"]
-
-                    df["Custo Aquisição (R$)"] = 0.0
-                    df["Margem Alvo (%)"] = 0.15
-                    df["Preço Proposta Unit. (R$)"] = 0.0
-
-                    # Ordena pelos números dos itens
-                    try:
-                        df["_item_num"] = pd.to_numeric(df["Item"].str.extract(r'(\d+)')[0], errors="coerce")
-                        df = df.sort_values(by="_item_num").drop(columns=["_item_num"])
-                    except Exception:
-                        pass
-
-                    st.success(f"✅ Mapeados {len(df)} itens no edital via {modelo_usado}!")
-                    st.dataframe(df, use_container_width=True)
-
-                    excel_bytes = gerar_excel_estilizado(df)
-
-                    st.download_button(
-                        label="📥 Baixar Mapa de Preços Profissional (.xlsx)",
-                        data=excel_bytes,
-                        file_name=f"Mapa_Precos_{arquivo_pdf.name.replace('.pdf', '')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
-            except Exception as e:
-                st.error(f"Erro no processamento: {str(e)}")
+        except Exception as e:
+            barra_progresso.empty()
+            texto_status.empty()
+            st.error(f"Erro no processamento: {str(e)}")
 
 elif not api_key:
     st.info("Insira a sua chave de API na barra lateral ou configure nos secrets para iniciar a análise.")
