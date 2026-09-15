@@ -29,7 +29,7 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v3.3 - Cache em Dupla Camada (Instantâneo) & Barra de Progresso")
+st.caption("🚀 Pipeline Ativo: v3.4 - Bloqueio Estrito de Genéricos Sanofi/Medley & Cache em Dupla Camada")
 
 # Chave de API higienizada
 api_key = ""
@@ -149,9 +149,10 @@ if segmento == "Medicamentos":
     )
 
     st.sidebar.markdown(
-        "**Hierarquia Comercial:**\n"
-        "- 🥇 **Sanofi** prioridade máxima.\n"
-        "- 🥈 **Blau** sobre **Eurofarma**."
+        "**Hierarquia e Diretrizes Comerciais:**\n"
+        "- 🥇 **Sanofi** prioridade máxima (apenas linha de referência).\n"
+        "- 🥈 **Blau** sobre **Eurofarma**.\n"
+        "- 🚫 **Bloqueio Ativo:** Genéricos da Sanofi e Medley descartados."
     )
 
 elif segmento == "Material Elétrico / Engenharia":
@@ -252,7 +253,7 @@ def extrair_itens_com_gemini_cached(pdf_bytes_hash, texto_edital, prompt_instruc
     return resposta.text, modelo_eleito
 
 # ========================================================
-# CRUZAMENTO INTELIGENTE E BIDIRECIONAL COM O PORTFÓLIO
+# CRUZAMENTO INTELIGENTE (FILTRO RIGOROSO SANOFI/MEDLEY)
 # ========================================================
 def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     if df_port is None:
@@ -264,13 +265,31 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     base["SUBSTANCIA_NORM"] = base["SUBSTÂNCIA"].apply(normalizar_texto)
     base["LABORATORIO_NORM"] = base["LABORATÓRIO"].apply(normalizar_texto)
     base["PRODUTO_NORM"] = base["PRODUTO"].apply(normalizar_texto)
+    base["APRESENTACAO_NORM"] = base["APRESENTAÇÃO"].apply(normalizar_texto) if "APRESENTAÇÃO" in base.columns else ""
+
+    # 1. BLOQUEIO RIGOROSO DE MEDLEY E GENÉRICOS SANOFI
+    # - Qualquer produto da Medley
+    # - Qualquer produto que mencione expressamente GENERICO
+    # - Na Sanofi: produtos onde o nome do produto é apenas a própria substância (indicativo de genérico)
+    mascara_medley = (
+        base["LABORATORIO_NORM"].str.contains("MEDLEY", na=False) |
+        base["PRODUTO_NORM"].str.contains("MEDLEY", na=False)
+    )
+
+    mascara_generico_sanofi = (
+        base["LABORATORIO_NORM"].str.contains("SANOFI", na=False) & (
+            base["PRODUTO_NORM"].str.contains("GENERIC", na=False) |
+            base["APRESENTACAO_NORM"].str.contains("GENERIC", na=False) |
+            (base["PRODUTO_NORM"] == base["SUBSTANCIA_NORM"])  # Genérico não tem marca de fantasia
+        )
+    )
+
+    # Base sanitizada sem Medley e sem genéricos da Sanofi
+    base_valida = base[~(mascara_medley | mascara_generico_sanofi)]
 
     termos_busca_labs = []
     for lab in labs_escolhidos:
         termos_busca_labs.extend(MAPEAMENTO_LABS.get(lab, [normalizar_texto(lab)]))
-
-    mascara_apenas_medley = (base["LABORATORIO_NORM"] == "MEDLEY") & (~base["LABORATORIO_NORM"].str.contains("SANOFI"))
-    base_valida = base[~mascara_apenas_medley]
 
     labs_atribuidos = []
     produtos_atribuidos = []
@@ -298,6 +317,7 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
 
+            # Hierarquia: Sanofi (Inovador/Referência) > Blau > Eurofarma
             if tem_sanofi:
                 lab_final_filtro = [l for l in labs_encontrados if "SANOFI" in l][0]
             elif tem_blau:
@@ -494,9 +514,9 @@ if arquivo_pdf and api_key:
                 texto_status.empty()
                 st.warning("Nenhum item foi identificado no edital.")
             else:
-                # ETAPA 4: Cruzamento e Regras Comerciais
+                # ETAPA 4: Cruzamento e Regras Comerciais (Com bloqueio de genéricos Sanofi/Medley)
                 barra_progresso.progress(90)
-                texto_status.text("🧠 Aplicando hierarquia comercial (Sanofi > Blau > Eurofarma) (90%)...")
+                texto_status.text("🧠 Aplicando hierarquia e excluindo genéricos Sanofi/Medley (90%)...")
 
                 lista_dicts = [item.model_dump() for item in dados.itens]
                 salvar_aprendizado(lista_dicts)
