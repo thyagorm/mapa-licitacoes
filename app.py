@@ -19,7 +19,7 @@ class ItemLicitacao(BaseModel):
     numero_item: str = Field(description="Número ou identificador do item/lote no edital (ex: '01', 'Lote 1 - Item 2')")
     descricao: str = Field(description="Descrição completa do medicamento no edital (princípio ativo, dosagem, forma)")
     principio_ativo_identificado: str = Field(description="Substância / Denominação genérica do princípio ativo identificado")
-    unidade: str = Field(description="Unidade de medida/fornecimento (ex: AMP, FA, COMP, FR)")
+    unidade: str = Field(description="Unidade de medida/fornecimento (ex: AMP, FA, COMP, FR, BISNAGA)")
     quantidade: float = Field(description="Quantidade demandada expressa em número float")
     valor_referencia_unitario: float = Field(description="Valor unitário máximo ou de referência do edital")
 
@@ -29,9 +29,9 @@ class ListaItens(BaseModel):
 # 2. Configurações da Página
 st.set_page_config(page_title="Radar Farma - Licitações", layout="wide", page_icon="💊")
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.caption("🚀 Pipeline Ativo: v3.0 - Memória Persistente de Aprendizado & Otimização Extrema de Tokens")
+st.caption("🚀 Pipeline Ativo: v3.1 - Busca Completa Sem Cortes Prematuros & Matching Flexível")
 
-# Chave de API higienizada contra espaços ou aspas nos Secrets
+# Chave de API higienizada
 api_key = ""
 if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
     api_key = str(st.secrets["GEMINI_API_KEY"]).strip().strip("'").strip('"')
@@ -49,9 +49,10 @@ def normalizar_texto(texto):
         return ""
     nfkd = unicodedata.normalize('NFKD', str(texto))
     texto_sem_acento = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    return texto_sem_acento.upper().strip()
+    # Remove pontuações desnecessárias para facilitar cruzamento
+    texto_limpo = re.sub(r'[^A-Z0-9\s]', ' ', texto_sem_acento.upper())
+    return " ".join(texto_limpo.split())
 
-# Gerenciador da Base de Memória de Aprendizado
 def carregar_memoria():
     if os.path.exists(ARQUIVO_MEMORIA):
         try:
@@ -62,17 +63,12 @@ def carregar_memoria():
     return {}
 
 def salvar_aprendizado(novos_itens):
-    """
-    Registra novas descrições associadas a princípios ativos para reutilização local.
-    """
     memoria = carregar_memoria()
     atualizado = False
     for item in novos_itens:
         desc_norm = normalizar_texto(item.get("descricao", ""))
         princ_ativo = normalizar_texto(item.get("principio_ativo_identificado", ""))
         unidade = item.get("unidade", "")
-        
-        # Cria assinatura base da descrição
         if desc_norm and princ_ativo and desc_norm not in memoria:
             memoria[desc_norm] = {
                 "principio_ativo": princ_ativo,
@@ -81,10 +77,6 @@ def salvar_aprendizado(novos_itens):
                 "ultima_atualizacao": time.strftime("%Y-%m-%d %H:%M:%S")
             }
             atualizado = True
-        elif desc_norm in memoria:
-            memoria[desc_norm]["vezes_visto"] = memoria[desc_norm].get("vezes_visto", 1) + 1
-            atualizado = True
-
     if atualizado:
         try:
             with open(ARQUIVO_MEMORIA, "w", encoding="utf-8") as f:
@@ -145,23 +137,22 @@ if segmento == "Medicamentos":
     )
     
     if df_portfolio is not None:
-        st.sidebar.success(f"Base Portfólio: {len(df_portfolio)} SKUs")
+        st.sidebar.success(f"Base Portfólio: {len(df_portfolio)} produtos cadastrados.")
     else:
         st.sidebar.warning("Arquivo 'portfolio_laboratorios.xlsx' não encontrado na raiz.")
 
-    st.sidebar.info(f"🧠 **Memória de Aprendizado:** {len(base_memoria)} termos/sinônimos já memorizados.")
+    st.sidebar.info(f"🧠 **Memória de Aprendizado:** {len(base_memoria)} termos memorizados.")
 
     filtro_exibicao = st.sidebar.radio(
         "Visualização dos Resultados:",
-        ["Apenas Itens com Match nos Laboratórios", "Todos os Medicamentos do Edital"],
-        index=0
+        ["Todos os Medicamentos do Edital", "Apenas Itens com Match nos Laboratórios"],
+        index=0  # Agora exibe todos por padrão para você não perder nada de vista!
     )
 
     st.sidebar.markdown(
-        "**Hierarquia Comercial Fixada:**\n"
-        "- 🥇 **Sanofi** (Referência) tem prioridade máxima.\n"
-        "- 🥈 **Blau** tem prioridade sobre **Eurofarma**.\n"
-        "- 🚫 **Sanofi:** exclui linha Medley (sem genéricos)."
+        "**Hierarquia Comercial:**\n"
+        "- 🥇 **Sanofi** prioridade máxima.\n"
+        "- 🥈 **Blau** sobre **Eurofarma**."
     )
 
 elif segmento == "Material Elétrico / Engenharia":
@@ -175,25 +166,18 @@ else:
 arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
 
 # ========================================================
-# PRÉ-PROCESSADOR HEURÍSTICO (FILTRO DE PÁGINAS)
+# PRÉ-PROCESSADOR SEM CORTE PREMATURO
 # ========================================================
 def pre_processar_pdf_inteligente(bytes_arquivo):
     leitor = PdfReader(BytesIO(bytes_arquivo))
     total_paginas = len(leitor.pages)
     
     termos_itens = [
-        "TERMO DE REFERENCIA", "ANEXO I", "ESPECIFICACAO DO OBJETO", 
-        "ESPECIFICACOES DOS ITENS", "PLANILHA DE ITENS", "DESCRICAO DO OBJETO",
-        "VALOR ESTIMADO", "VALOR DE REFERENCIA", "QUANTIDADE", "UNIDADE DE FORNECIMENTO",
-        "PRINCIPIO ATIVO", "FORMA FARMACEUTICA", "CONCENTRACAO", "LOTE"
+        "ITEM", "QUANTIDADE", "VALOR ESTIMADO", "VALOR DE REFERENCIA", 
+        "PRINCIPIO ATIVO", "FORMA FARMACEUTICA", "CONCENTRACAO", "LOTE",
+        "TERMO DE REFERENCIA", "ANEXO", "ESPECIFICACAO"
     ]
     
-    termos_terminadores = [
-        "MINUTA DE CONTRATO", "MODELO DE PROCURACAO", "MODELO DE DECLARACAO",
-        "MODELO DE PROPOSTA", "CONDICOES DA HABILITACAO", "SANCOES ADMINISTRATIVAS",
-        "DA RESCISAO", "DAS PENALIDADES"
-    ]
-
     paginas_selecionadas = []
     paginas_indices = []
 
@@ -201,28 +185,27 @@ def pre_processar_pdf_inteligente(bytes_arquivo):
         raw_text = pagina.extract_text() or ""
         norm_text = normalizar_texto(raw_text)
         
-        if any(term in norm_text for term in ["MINUTA DE CONTRATO", "MODELO DE PROCURACAO"]) and len(paginas_selecionadas) >= 2:
-            break
-
-        score_itens = sum(1 for t in termos_itens if t in norm_text)
-        tem_terminador = any(t in norm_text for t in termos_terminadores)
+        # Conta densidade de palavras de itens
+        score = sum(1 for t in termos_itens if t in norm_text)
         
-        if score_itens >= 2 and not (tem_terminador and score_itens < 3):
+        # Se a página contiver indícios de lista/tabela, inclui
+        if score >= 2 or re.search(r'\b(ITEM\s+\d+|LOTE\s+\d+)\b', norm_text):
             paginas_selecionadas.append(f"--- PÁGINA {i+1} ---\n{raw_text}")
             paginas_indices.append(i + 1)
 
-    if len(paginas_selecionadas) < 2:
+    # Se a filtragem pegou muito pouco, envia o edital inteiro para garantir cobertura
+    if len(paginas_selecionadas) < 4:
         paginas_selecionadas = []
-        paginas_indices = list(range(1, min(total_paginas, 18) + 1))
-        for i in range(min(total_paginas, 18)):
-            txt = leitor.pages[i].extract_text() or ""
+        paginas_indices = list(range(1, total_paginas + 1))
+        for i, pagina in enumerate(leitor.pages):
+            txt = pagina.extract_text() or ""
             paginas_selecionadas.append(f"--- PÁGINA {i+1} ---\n{txt}")
 
     texto_filtrado = "\n\n".join(paginas_selecionadas)
     return texto_filtrado, paginas_indices, total_paginas
 
 # ========================================================
-# FUNÇÃO DE EXTRAÇÃO COM CACHE NATIVO DO STREAMLIT
+# FUNÇÃO DE EXTRAÇÃO COM CACHE
 # ========================================================
 @st.cache_data(show_spinner=False)
 def extrair_itens_com_gemini_cached(pdf_bytes_hash, texto_edital, prompt_instrucao, key_api):
@@ -272,6 +255,9 @@ def extrair_itens_com_gemini_cached(pdf_bytes_hash, texto_edital, prompt_instruc
 
     return resposta.text, modelo_eleito
 
+# ========================================================
+# CRUZAMENTO INTELIGENTE E BIDIRECIONAL COM O PORTFÓLIO
+# ========================================================
 def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     if df_port is None:
         df_extraido["Laboratório Sugerido"] = "Sem base carregada"
@@ -287,32 +273,39 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     for lab in labs_escolhidos:
         termos_busca_labs.extend(MAPEAMENTO_LABS.get(lab, [normalizar_texto(lab)]))
 
-    mascara_medley = base["PRODUTO_NORM"].str.contains("MEDLEY") | \
-                     base["LABORATORIO_NORM"].str.contains("MEDLEY")
-    base_valida = base[~mascara_medley]
+    # Permite Sanofi mesmo se tiver Medley no grupo corporativo, desde que seja marca/produto de referência
+    mascara_apenas_medley = (base["LABORATORIO_NORM"] == "MEDLEY") & (~base["LABORATORIO_NORM"].str.contains("SANOFI"))
+    base_valida = base[~mascara_apenas_medley]
 
     labs_atribuidos = []
     produtos_atribuidos = []
 
     for _, row in df_extraido.iterrows():
         substancia_edital = normalizar_texto(row["Princípio Ativo"])
-        primeira_palavra = substancia_edital.split()[0] if substancia_edital else ""
+        desc_completa = normalizar_texto(row["Descrição Completa Edital"])
+        
+        palavras_edital = [p for p in substancia_edital.split() if len(p) > 3]
 
+        # Matching bidirecional: substância do edital no portfólio OU substância do portfólio no edital
         matches = base_valida[
-            base_valida["SUBSTANCIA_NORM"].str.contains(substancia_edital, regex=False, na=False) |
-            base_valida["SUBSTANCIA_NORM"].apply(lambda s: primeira_palavra in s if len(primeira_palavra) > 4 else False)
+            base_valida["SUBSTANCIA_NORM"].apply(lambda s: s != "" and (s in substancia_edital or substancia_edital in s or s in desc_completa)) |
+            base_valida["PRODUTO_NORM"].apply(lambda p: p != "" and len(p) > 3 and (p in desc_completa or p in substancia_edital)) |
+            base_valida["SUBSTANCIA_NORM"].apply(lambda s: any(p in s for p in palavras_edital[:2]) if len(palavras_edital) >= 1 else False)
         ]
 
+        # Filtra pelos laboratórios ativos
         matches = matches[matches["LABORATORIO_NORM"].apply(
             lambda lab_nome: any(termo in lab_nome for termo in termos_busca_labs)
         )]
 
         if not matches.empty:
             labs_encontrados = matches["LABORATORIO_NORM"].unique().tolist()
+            
             tem_sanofi = any("SANOFI" in l for l in labs_encontrados)
             tem_blau = any("BLAU" in l for l in labs_encontrados)
             tem_euro = any("EUROFARMA" in l for l in labs_encontrados)
 
+            # Hierarquia: Sanofi > Blau > Eurofarma
             if tem_sanofi:
                 lab_final_filtro = [l for l in labs_encontrados if "SANOFI" in l][0]
             elif tem_blau:
@@ -333,7 +326,7 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
     df_extraido["Produto / Marca Ref."] = produtos_atribuidos
     return df_extraido
 
-# Gerador Excel Executivo com Fórmulas e Estilos
+# Gerador Excel
 def gerar_excel_estilizado(df_dados):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -433,44 +426,43 @@ def gerar_excel_estilizado(df_dados):
 if arquivo_pdf and api_key:
     if st.button("🚀 Processar Edital", type="primary"):
         status_box = st.empty()
-        with st.spinner("Analisando páginas e consultando memória de aprendizado..."):
+        with st.spinner("Varrendo edital completo e cruzando com o portfólio..."):
             try:
                 pdf_bytes = arquivo_pdf.getvalue()
-                pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
-
+                
+                # Geramos o hash com o texto das páginas capturadas para invalidar cache antigo se o filtro mudar
                 texto_edital, paginas_filtradas, total_pags = pre_processar_pdf_inteligente(pdf_bytes)
+                pdf_hash = hashlib.sha256((pdf_bytes + texto_edital.encode('utf-8'))).hexdigest()
 
                 if not texto_edital.strip():
                     st.error("O PDF parece ser uma imagem digitalizada sem camada de texto pesquisável.")
                     st.stop()
 
-                memoria_ativa = carregar_memoria()
                 st.info(
-                    f"📑 **Otimização de Payload:** Edital com **{total_pags} páginas** reduzido para "
-                    f"**{len(paginas_filtradas)} páginas-chave**. Memória ativa com **{len(memoria_ativa)} itens memorizados**."
+                    f"📑 **Varredura Completa:** Analisando **{len(paginas_filtradas)} de {total_pags} páginas** com presença de itens e tabelas."
                 )
 
-                # Prioriza as substâncias do portfólio para ancorar o modelo
                 guia_substancias = ""
                 if segmento == "Medicamentos" and df_portfolio is not None:
-                    subs_unicas = df_portfolio["SUBSTÂNCIA"].dropna().unique()[:200].tolist()
-                    guia_substancias = f"Lista estrita de substâncias prioritárias do portfólio:\n[{', '.join(subs_unicas)}]"
+                    subs_unicas = df_portfolio["SUBSTÂNCIA"].dropna().unique()[:250].tolist()
+                    guia_substancias = f"Lista de referência de substâncias prioritárias dos laboratórios parceiros:\n[{', '.join(subs_unicas)}]"
 
                 if segmento == "Medicamentos":
                     prompt = f"""
                     Você é um analista sênior de licitações farmacêuticas e compras hospitalares.
-                    Analise o texto do edital e extraia TODOS os itens de medicamentos licitados.
+                    Analise o texto do edital e extraia ABSOLUTAMENTE TODOS os itens de medicamentos licitados.
+                    NÃO DEIXE NENHUM ITEM DE FORA.
 
-                    Laboratórios alvo: [{", ".join(labs_selecionados)}]
+                    Laboratórios parceiros: [{", ".join(labs_selecionados)}]
                     {guia_substancias}
 
                     DIRETRIZES MANDATÓRIAS:
-                    1. Identifique e extraia todos os itens de medicamentos com descrição, dosagem e forma farmacêutica.
-                    2. No campo 'principio_ativo_identificado', extraia a denominação genérica exata da substância ativa.
+                    1. Identifique e extraia todos os itens com descrição, dosagem e forma farmacêutica.
+                    2. No campo 'principio_ativo_identificado', extraia a denominação genérica exata da substância ativa (ex: 'Enoxaparina Sódica', 'Insulina Glargina', 'Propofol', 'Dipirona').
                     3. Converta quantidades e valores de referência para números decimais (float).
                     4. Retorne no formato JSON estruturado.
 
-                    TEXTO DO EDITAL (TRECHO OTIMIZADO):
+                    TEXTO DO EDITAL:
                     \"\"\"
                     {texto_edital}
                     \"\"\"
@@ -486,7 +478,7 @@ if arquivo_pdf and api_key:
                     \"\"\"
                     """
 
-                # Chamada com Cache e Payload Reduzido
+                # Execução com Cache e Retries
                 json_resposta, modelo_usado = extrair_itens_com_gemini_cached(
                     pdf_hash, texto_edital, prompt, api_key
                 )
@@ -494,11 +486,9 @@ if arquivo_pdf and api_key:
                 dados = ListaItens.model_validate_json(json_resposta)
 
                 if not dados.itens:
-                    st.warning("Nenhum item foi identificado no trecho do edital processado.")
+                    st.warning("Nenhum item foi identificado no edital.")
                 else:
                     lista_dicts = [item.model_dump() for item in dados.itens]
-                    
-                    # Salva novos itens identificados na memória para aprendizado contínuo
                     salvar_aprendizado(lista_dicts)
 
                     df = pd.DataFrame(lista_dicts)
@@ -523,11 +513,14 @@ if arquivo_pdf and api_key:
                     df["Margem Alvo (%)"] = 0.15
                     df["Preço Proposta Unit. (R$)"] = 0.0
 
-                    memoria_pos = carregar_memoria()
-                    st.success(
-                        f"✅ Mapeados {len(df)} itens via {modelo_usado}! "
-                        f"Base de memória expandida para {len(memoria_pos)} termos aprendidos."
-                    )
+                    # Ordena pelos números dos itens
+                    try:
+                        df["_item_num"] = pd.to_numeric(df["Item"].str.extract(r'(\d+)')[0], errors="coerce")
+                        df = df.sort_values(by="_item_num").drop(columns=["_item_num"])
+                    except Exception:
+                        pass
+
+                    st.success(f"✅ Mapeados {len(df)} itens no edital via {modelo_usado}!")
                     st.dataframe(df, use_container_width=True)
 
                     excel_bytes = gerar_excel_estilizado(df)
