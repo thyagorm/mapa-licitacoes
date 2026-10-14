@@ -1,7 +1,11 @@
-streamlit>=1.35.0
-google-genai>=0.8.0
-pydantic>=2.0.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-pypdf
 PyMuPDF
+google-genai>=0.8.0
+google-generativeai
+openpyxl>=3.1.0
+pandas
+pandas>=2.0.0
+pydantic>=2.0.0
+pypdf
+requests
+streamlit
+streamlit>=1.35.0
