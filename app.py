@@ -307,4 +307,252 @@ def enriquecer_com_portfolio(df_extraido, df_port, labs_escolhidos):
             elif tem_baxter:
                 lab_final_filtro = [l for l in labs_encontrados if "BAXTER" in l][0]
             elif tem_blau:
-                lab
+                lab_final_filtro = [l for l in labs_encontrados if "BLAU" in l][0]
+            elif tem_euro:
+                lab_final_filtro = [l for l in labs_encontrados if "EUROFARMA" in l][0]
+            else:
+                lab_final_filtro = labs_encontrados[0]
+
+            linha_escolhida = matches[matches["LABORATORIO_NORM"] == lab_final_filtro].iloc[0]
+            labs_atribuidos.append(linha_escolhida["LABORATÓRIO"])
+            produtos_atribuidos.append(linha_escolhida["PRODUTO"])
+        else:
+            labs_atribuidos.append("Não mapeado / Verificar")
+            produtos_atribuidos.append("-")
+
+    df_extraido["Laboratório Sugerido"] = labs_atribuidos
+    df_extraido["Produto / Marca Ref."] = produtos_atribuidos
+    return df_extraido
+
+# ========================================================
+# GERADOR DE EXCEL ESTILIZADO CORPORATIVO
+# ========================================================
+def gerar_excel_estilizado(df_dados):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_dados.to_excel(writer, index=False, sheet_name="Mapa_de_Precos")
+        ws = writer.sheets["Mapa_de_Precos"]
+        ws.views.sheetView[0].showGridLines = True
+
+        fonte_cabecalho = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        fill_cabecalho = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        
+        fonte_corpo = Font(name="Calibri", size=10)
+        fill_editavel = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        
+        alinhamento_centro = Alignment(horizontal="center", vertical="center")
+        alinhamento_esquerda = Alignment(horizontal="left", vertical="center")
+        alinhamento_direita = Alignment(horizontal="right", vertical="center")
+        
+        borda_fina = Border(
+            left=Side(style="thin", color="D9D9D9"),
+            right=Side(style="thin", color="D9D9D9"),
+            top=Side(style="thin", color="D9D9D9"),
+            bottom=Side(style="thin", color="D9D9D9")
+        )
+
+        num_linhas = len(df_dados)
+        num_cols = len(df_dados.columns)
+        colunas_nomes = list(df_dados.columns)
+
+        for col_idx in range(1, num_cols + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = fonte_cabecalho
+            cell.fill = fill_cabecalho
+            cell.alignment = alinhamento_centro
+
+        for row_idx in range(2, num_linhas + 2):
+            for col_idx in range(1, num_cols + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.font = fonte_corpo
+                cell.border = borda_fina
+                
+                nome_col = colunas_nomes[col_idx - 1]
+                if nome_col in ["Lance Mínimo Sugerido", "Preço Proposta Unitário"]:
+                    cell.fill = fill_editavel
+                    cell.number_format = 'R$ #,##0.00'
+                    cell.alignment = alinhamento_direita
+                elif nome_col in ["Quantidade Licitada"]:
+                    cell.number_format = '#,##0'
+                    cell.alignment = alinhamento_direita
+                elif nome_col in ["Item", "Unidade"]:
+                    cell.alignment = alinhamento_centro
+                else:
+                    cell.alignment = alinhamento_esquerda
+
+        for col in ws.columns:
+            col_letter = get_column_letter(col[0].column)
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 13)
+
+        if "Descrição Completa Edital" in colunas_nomes:
+            ws.column_dimensions[get_column_letter(colunas_nomes.index("Descrição Completa Edital") + 1)].width = 42
+        if "Princípio Ativo" in colunas_nomes:
+            ws.column_dimensions[get_column_letter(colunas_nomes.index("Princípio Ativo") + 1)].width = 25
+        if "Laboratório Sugerido" in colunas_nomes:
+            ws.column_dimensions[get_column_letter(colunas_nomes.index("Laboratório Sugerido") + 1)].width = 28
+        if "Produto / Marca Ref." in colunas_nomes:
+            ws.column_dimensions[get_column_letter(colunas_nomes.index("Produto / Marca Ref.") + 1)].width = 22
+
+    return output.getvalue()
+
+# ========================================================
+# SIDEBAR - CONFIGURAÇÃO E HIERARQUIA COMERCIAL
+# ========================================================
+st.sidebar.title("🎯 STRIKE | Configurações")
+
+segmento = st.sidebar.selectbox(
+    "Segmento da Licitação:",
+    ["Medicamentos", "Material Elétrico / Engenharia", "Outros"]
+)
+
+# VERIFICA A CHAVE NO SERVIDOR PRIMEIRO
+api_key_backend = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+
+# SÓ EXIBE O CAMPO DE TEXTO SE A CHAVE NÃO EXISTIR NO SERVIDOR
+if not api_key_backend:
+    api_key = st.sidebar.text_input("Gemini API Key (Não configurada no servidor):", type="password")
+else:
+    api_key = api_key_backend
+
+modelo_preferido = st.sidebar.selectbox(
+    "Modelo IA Preferencial:",
+    MODELOS_ATIVOS_CONTA,
+    index=0
+)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ Parâmetros Comerciais")
+
+if segmento == "Medicamentos":
+    labs_base = ["Pint Pharma", "Sanofi", "Blau", "Eurofarma", "United Medical", "Baxter"]
+    labs_escolhidos = st.sidebar.multiselect(
+        "Laboratórios de Interesse (Hierarquia):",
+        options=labs_base,
+        default=labs_base
+    )
+    
+    if df_portfolio is not None:
+        st.sidebar.success(f"Base Portfólio: {len(df_portfolio)} produtos cadastrados.")
+    else:
+        st.sidebar.warning("Arquivo 'portfolio_laboratorios.xlsx' não encontrado na raiz.")
+
+    st.sidebar.markdown(
+        "**Hierarquia Comercial Estratégica:**\n"
+        "- 🥇 **Pint Pharma & Sanofi** prioridade máxima.\n"
+        "- 🥈 **Blau** sobre **Eurofarma**.\n"
+        "- 🚫 **Bloqueio:** Medley e genéricos da Sanofi eliminados."
+    )
+elif segmento == "Material Elétrico / Engenharia":
+    portfolio_texto = st.sidebar.text_area(
+        "Itens de interesse:",
+        value="Material elétrico, cabeamento estruturado, iluminação LED, quadros de distribuição"
+    )
+else:
+    portfolio_texto = st.sidebar.text_area("Itens de interesse:", value="")
+
+# ========================================================
+# TELA PRINCIPAL
+# ========================================================
+st.title("🎯 Analisador de Editais & Mapa de Preços")
+st.markdown("🚀 **Pipeline Ativo:** v4.2 - Modelos validados na conta & Extração de Editais com Redução de Ruído")
+
+arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
+
+# ========================================================
+# PROCESSAMENTO PRINCIPAL
+# ========================================================
+if arquivo_pdf and api_key:
+    if st.button("🚀 Processar Edital", type="primary"):
+        barra_progresso = st.progress(0)
+        texto_status = st.empty()
+        
+        try:
+            pdf_bytes = arquivo_pdf.getvalue()
+            pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+            
+            barra_progresso.progress(25)
+            texto_status.text("🔍 Filtrando páginas relevantes localmente (0 tokens)...")
+            
+            eh_escaneado, texto_edital, paginas_filtradas, total_pags = analisar_e_filtrar_pdf(pdf_bytes)
+
+            if eh_escaneado:
+                st.warning(f"📸 **PDF Escaneado Detectado ({total_pags} págs):** Usando leitura visual direta.")
+            else:
+                tokens_est = int(len(texto_edital) / 4)
+                st.info(f"📄 **Filtro Ativo:** {len(paginas_filtradas)} de {total_pags} página(s) selecionada(s) (~{tokens_est:,} tokens de entrada).")
+
+            barra_progresso.progress(45)
+            texto_status.text("⚙️ Preparando extração com mínimo consumo de TPM...")
+
+            if segmento == "Medicamentos":
+                prompt = (
+                    "Extraia todos os medicamentos licitados neste documento para o JSON solicitado. "
+                    "Em 'principio_ativo_identificado', informe apenas a substância ativa genérica "
+                    "(ex: 'Enoxaparina Sódica', 'Propofol', 'Dipirona'). "
+                    "Quantidades e valores unitários em float (0.0 se ausente)."
+                )
+            else:
+                prompt = f"Extraia os itens referentes a: {portfolio_texto}. Retorne no JSON solicitado."
+
+            barra_progresso.progress(65)
+            texto_status.text(f"🤖 Consultando {modelo_preferido} (com transbordo automático de cota)...")
+
+            json_resposta, modelo_usado = extrair_itens_roteamento_inteligente(
+                pdf_hash, pdf_bytes, texto_edital, eh_escaneado, prompt, modelo_preferido, api_key
+            )
+
+            barra_progresso.progress(80)
+            texto_status.text("📦 Estruturando itens extraídos...")
+            dados = ListaItens.model_validate_json(json_resposta)
+
+            if not dados.itens:
+                barra_progresso.empty()
+                texto_status.empty()
+                st.warning("Nenhum item foi identificado no documento.")
+            else:
+                barra_progresso.progress(90)
+                texto_status.text("🧠 Cruzando com portfólio Excel localmente (Pint Pharma / Sanofi no topo)...")
+
+                tabela_dados = []
+                for obj in dados.itens:
+                    tabela_dados.append({
+                        "Item": obj.item,
+                        "Princípio Ativo": obj.principio_ativo_identificado,
+                        "Descrição Completa Edital": obj.descricao_completa_edital,
+                        "Unidade": obj.unidade_fornecimento,
+                        "Quantidade Licitada": obj.quantidade_licitada,
+                        "Preço Proposta Unitário": obj.valor_unitario_estimado,
+                        "CATMAT / SIGA": obj.codigo_catmat_siga
+                    })
+
+                df_resultado = pd.DataFrame(tabela_dados)
+
+                if segmento == "Medicamentos":
+                    df_resultado = enriquecer_com_portfolio(df_resultado, df_portfolio, labs_escolhidos)
+
+                barra_progresso.progress(100)
+                texto_status.empty()
+                barra_progresso.empty()
+
+                st.success(f"✅ Processamento concluído com sucesso via modelo `{modelo_usado}`!")
+                st.dataframe(df_resultado, use_container_width=True)
+
+                excel_bytes = gerar_excel_estilizado(df_resultado)
+                st.download_button(
+                    label="📥 Baixar Mapa de Preços (Excel Estilizado)",
+                    data=excel_bytes,
+                    file_name="mapa_de_precos_strike.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+
+        except Exception as e:
+            if 'barra_progresso' in locals():
+                barra_progresso.empty()
+            if 'texto_status' in locals():
+                texto_status.empty()
+            st.error(f"❌ Erro crítico no processamento: {str(e)}")
+
+elif arquivo_pdf and not api_key:
+    st.warning("⚠️ Por favor, configure a sua Gemini API Key nos secrets para habilitar o processamento por IA.")
