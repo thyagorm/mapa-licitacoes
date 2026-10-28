@@ -39,10 +39,12 @@ MAPEAMENTO_LABS = {
     "Baxter": ["BAXTER"]
 }
 
+# LISTA ATUALIZADA EXCLUSIVAMENTE COM MODELOS 3.X (Recomendação Google API)
 MODELOS_ATIVOS_CONTA = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-1.5-flash"
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash"
 ]
 
 # ========================================================
@@ -89,7 +91,7 @@ def carregar_portfolio():
 df_portfolio = carregar_portfolio()
 
 # ========================================================
-# PRÉ-PROCESSADOR CIRÚRGICO DE PDF (CALIBRADO COM 6 EDIOTAIS)
+# PRÉ-PROCESSADOR CIRÚRGICO DE PDF
 # ========================================================
 @st.cache_data(show_spinner=False)
 def analisar_e_filtrar_pdf(bytes_arquivo):
@@ -224,7 +226,7 @@ def extrair_itens_roteamento_inteligente(pdf_bytes_hash, pdf_bytes, texto_edital
         except Exception as err:
             ultimo_erro = err
             msg = str(err)
-            if any(cod in msg for cod in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "500"]):
+            if any(cod in msg for cod in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "500", "404", "NOT_FOUND"]):
                 time.sleep(1.5)
                 continue
             else:
@@ -455,7 +457,7 @@ else:
 # TELA PRINCIPAL
 # ========================================================
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.markdown("🚀 **Pipeline Ativo:** v4.2 - Modelos validados na conta & Extração de Editais com Redução de Ruído")
+st.markdown("🚀 **Pipeline Ativo:** v4.3 - Modelos 3.X (Adequação API Google) & Extração de Editais com Redução de Ruído")
 
 arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
 
