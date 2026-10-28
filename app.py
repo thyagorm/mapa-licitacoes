@@ -39,7 +39,7 @@ MAPEAMENTO_LABS = {
     "Baxter": ["BAXTER"]
 }
 
-# LISTA ATUALIZADA EXCLUSIVAMENTE COM MODELOS 3.X (Recomendação Google API)
+# LISTA ATUALIZADA EXCLUSIVAMENTE COM MODELOS 3.X
 MODELOS_ATIVOS_CONTA = [
     "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
@@ -64,13 +64,13 @@ def normalizar_texto(texto: str) -> str:
 from pydantic import BaseModel, Field
 
 class ItemEdital(BaseModel):
-    item: str = Field(description="Número ou identificador do item no edital")
-    principio_ativo_identificado: str = Field(description="Substância ativa genérica ou descrição resumida do item")
-    descricao_completa_edital: str = Field(description="Descrição original integral do item")
+    item: str = Field(description="Número ou identificador do item")
+    principio_ativo_identificado: str = Field(description="Substância ativa genérica")
+    descricao_completa_edital: str = Field(description="Descrição resumida do item (máx 150 caracteres)")
     unidade_fornecimento: str = Field(description="UN, FR, AMP, CX, COMP, etc.")
-    quantidade_licitada: float = Field(description="Quantidade total licitada")
-    valor_unitario_estimado: float = Field(description="Valor unitário estimado ou 0.0 se sigiloso")
-    codigo_catmat_siga: str = Field(description="Código CATMAT/CATMAS/SIGA se houver")
+    quantidade_licitada: float = Field(description="Quantidade licitada (float)")
+    valor_unitario_estimado: float = Field(description="Valor estimado (0.0 se ausente)")
+    codigo_catmat_siga: str = Field(description="Código CATMAT/SIGA se houver")
 
 class ListaItens(BaseModel):
     itens: list[ItemEdital]
@@ -457,7 +457,7 @@ else:
 # TELA PRINCIPAL
 # ========================================================
 st.title("🎯 Analisador de Editais & Mapa de Preços")
-st.markdown("🚀 **Pipeline Ativo:** v4.3 - Modelos 3.X (Adequação API Google) & Extração de Editais com Redução de Ruído")
+st.markdown("🚀 **Pipeline Ativo:** v4.4 - Auto-Recuperação de Editais Gigantes (Anti-Truncamento)")
 
 arquivo_pdf = st.file_uploader("Arraste o PDF do Edital ou Termo de Referência aqui", type=["pdf"])
 
@@ -490,8 +490,9 @@ if arquivo_pdf and api_key:
             if segmento == "Medicamentos":
                 prompt = (
                     "Extraia todos os medicamentos licitados neste documento para o JSON solicitado. "
-                    "Em 'principio_ativo_identificado', informe apenas a substância ativa genérica "
-                    "(ex: 'Enoxaparina Sódica', 'Propofol', 'Dipirona'). "
+                    "Seja conciso na descrição para evitar cortes de limite de texto. "
+                    "Em 'principio_ativo_identificado', informe apenas a substância genérica "
+                    "(ex: 'Enoxaparina Sódica', 'Propofol'). "
                     "Quantidades e valores unitários em float (0.0 se ausente)."
                 )
             else:
@@ -506,7 +507,24 @@ if arquivo_pdf and api_key:
 
             barra_progresso.progress(80)
             texto_status.text("📦 Estruturando itens extraídos...")
-            dados = ListaItens.model_validate_json(json_resposta)
+            
+            # --- MECANISMO DE AUTO-RECUPERAÇÃO DE TRUNCAMENTO (AUTO-HEALING) ---
+            try:
+                dados = ListaItens.model_validate_json(json_resposta)
+            except Exception as e_json:
+                if "EOF" in str(e_json) or "json_invalid" in str(e_json):
+                    texto_status.text("⚠️ Limite da IA atingido (edital longo)! Recuperando itens processados até o corte...")
+                    # Procura a última chave de fechamento de objeto para amputar a parte corrompida
+                    ultimo_fechamento = json_resposta.rfind('}')
+                    if ultimo_fechamento != -1:
+                        # Corta o texto corrompido e injeta o fechamento forçado da lista e do objeto raiz
+                        json_recuperado = json_resposta[:ultimo_fechamento+1] + '\n]}'
+                        dados = ListaItens.model_validate_json(json_recuperado)
+                        st.toast("Edital longo demais: A extração foi parcialmente recuperada.", icon="⚠️")
+                    else:
+                        raise e_json
+                else:
+                    raise e_json
 
             if not dados.itens:
                 barra_progresso.empty()
@@ -537,7 +555,7 @@ if arquivo_pdf and api_key:
                 texto_status.empty()
                 barra_progresso.empty()
 
-                st.success(f"✅ Processamento concluído com sucesso via modelo `{modelo_usado}`!")
+                st.success(f"✅ Processamento concluído com sucesso via modelo `{modelo_usado}`! Foram extraídos {len(df_resultado)} itens.")
                 st.dataframe(df_resultado, use_container_width=True)
 
                 excel_bytes = gerar_excel_estilizado(df_resultado)
