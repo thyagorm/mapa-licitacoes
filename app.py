@@ -6,8 +6,8 @@ import hashlib
 from io import BytesIO
 import pandas as pd
 import streamlit as st
-import google.generativeai as genai
-from google.generativeai import types
+from google import genai
+from google.genai import types
 from pypdf import PdfReader
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -555,4 +555,4 @@ if arquivo_pdf and api_key:
             st.error(f"❌ Erro crítico no processamento: {str(e)}")
 
 elif arquivo_pdf and not api_key:
-    st.warning("⚠️ Por favor, configure a sua Gemini API Key nos secrets para habilitar o processamento por IA.")
+    st.warning("⚠️ Por favor, configure a sua Gemini API Key nos secrets (ou na barra lateral) para habilitar o processamento por IA.")
